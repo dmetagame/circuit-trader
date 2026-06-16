@@ -60,34 +60,37 @@ describe("SimulatedWallet", () => {
   });
 });
 
-describe("TrustWalletWallet (adapter over a mock MCP transport)", () => {
+describe("TrustWalletWallet (adapter over a mock MCP transport — live twak serve tools)", () => {
+  // Shapes mirror the real `twak serve` MCP tools (verified 2026-06-16).
   const transport: TwakTransport = {
-    async callTool(name, args) {
+    async callTool(name) {
       switch (name) {
+        case "get_token_price":
+          return { success: true, token: "BNB", chain: "bsc", priceUsd: 600 };
         case "get_swap_quote":
-          return { quoteId: "twak-1", slippageBps: 35, price: 600 };
-        case "execute_swap":
-          return { txHash: "0x" + "ab".repeat(32), filledUsd: args.amountUsd, price: 601, slippageBps: 35 };
-        case "get_token_risk_score":
-          return { riskScore: 22 };
-        case "get_portfolio":
-          return { reserveUsd: 80, balancesUsd: { USDT: 0, BNB: 20 } };
+          return { success: true, input: "5 USDT", output: "0.00819 BNB", provider: "LiquidMesh", priceImpact: "0.35", steps: 1 };
+        case "swap":
+          return { success: true, txHash: "0x" + "ab".repeat(32), output: "0.00819 BNB", priceImpact: "0.35" };
+        case "check_token_risk":
+          return { success: true, symbol: "BNB", riskLevel: "low", isHoneypot: false };
+        case "get_token_holdings":
+          return { chain: "bsc", tokens: [{ symbol: "USDT", valueUsd: 80 }, { symbol: "BNB", valueUsd: 20 }] };
         default:
           throw new Error(`unexpected tool ${name}`);
       }
     },
   };
-  const w = new TrustWalletWallet({ transport, walletAddress: "0x" + "1".repeat(40) });
+  const w = new TrustWalletWallet({ transport, chain: "bsc" });
 
   it("maps quote / swap / risk / portfolio through the transport", async () => {
     const q = await w.getQuote({ asset: "BNB", side: "buy", sizeUsd: 5 });
-    expect(q).toMatchObject({ quoteId: "twak-1", expectedSlippageBps: 35, price: 600 });
+    expect(q).toMatchObject({ expectedSlippageBps: 35, price: 600 }); // priceImpact 0.35% -> 35 bps
 
     const fill = await w.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW);
-    expect(fill.filledUsd).toBe(5);
+    expect(fill.filledUsd).toBe(5); // buy spends ~sizeUsd of the reserve
     expect(fill.txHash).toMatch(/^0x[0-9a-f]{64}$/);
 
-    expect(await w.getTokenRiskScore("BNB")).toBe(22);
+    expect(await w.getTokenRiskScore("BNB")).toBe(10); // riskLevel "low" -> 10
 
     const pf = await w.getPortfolio();
     expect(pf.reserveUsd).toBe(80);
@@ -95,13 +98,24 @@ describe("TrustWalletWallet (adapter over a mock MCP transport)", () => {
     expect(pf.equityUsd).toBe(100);
   });
 
-  it("enforces the slippage cap client-side even if the transport doesn't", async () => {
-    const greedy: TwakTransport = {
+  it("maps a honeypot token to max risk", async () => {
+    const t: TwakTransport = {
       async callTool() {
-        return { txHash: "0x" + "cd".repeat(32), filledUsd: 5, price: 700, slippageBps: 500 };
+        return { success: true, riskLevel: "high", isHoneypot: true };
       },
     };
-    const gw = new TrustWalletWallet({ transport: greedy, walletAddress: "0x" + "2".repeat(40) });
+    const hw = new TrustWalletWallet({ transport: t, chain: "bsc", tokenAddresses: { SCAM: "0x" + "9".repeat(40) } });
+    expect(await hw.getTokenRiskScore("SCAM")).toBe(100);
+  });
+
+  it("enforces the slippage cap client-side even if the swap reports worse fill", async () => {
+    const greedy: TwakTransport = {
+      async callTool(name) {
+        if (name === "get_token_price") return { priceUsd: 600 };
+        return { success: true, txHash: "0x" + "cd".repeat(32), output: "0.0081 BNB", priceImpact: "5" }; // 500 bps
+      },
+    };
+    const gw = new TrustWalletWallet({ transport: greedy, chain: "bsc" });
     await expect(
       gw.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW),
     ).rejects.toBeInstanceOf(SlippageExceededError);
