@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1.0.0",
+  "agentId": "circuit-trader-demo-01",
+  "chainId": 56,
+  "walletAddress": "0x1111111111111111111111111111111111111111",
+  "issuedAt": "2026-06-16T00:00:00.000Z",
+  "expiresAt": "2026-06-30T00:00:00.000Z",
+  "allowedAssets": ["USDT", "BNB", "ETH", "CAKE", "TWT"],
+  "reserveAsset": "USDT",
+  "perTrade": {
+    "minTradeUsd": 2,
+    "maxTradeUsd": 5,
+    "maxSlippageBps": 75
+  },
+  "riskGates": {
+    "maxDrawdownPct": 20,
+    "dailyLossLimitPct": 5,
+    "minSignalConfidence": 0.7,
+    "maxTokenRiskScore": 40
+  },
+  "portfolio": {
+    "maxConcentrationPctPerAsset": 40,
+    "maxPortfolioExposurePct": 80
+  },
+  "activity": {
+    "cooldownMinutesPerAsset": 60,
+    "minTradeIntervalSeconds": 120,
+    "maxTradesPerDay": 12
+  },
+  "enforcement": {
+    "clampOversizedTrades": true,
+    "killSwitch": false
+  },
+  "signature": null
+}

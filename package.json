@@ -1,0 +1,16 @@
+{
+  "name": "circuit-trader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Circuit Trader — an autonomous BNB-chain trading agent that cannot trade unless its own signed risk constitution allows it. BNB HACK: AI Trading Agent Edition.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm -w packages/policy run test",
+    "build:policy": "npm -w packages/policy run build",
+    "dev": "npm -w apps/web run dev",
+    "build:web": "npm run build:policy && npm -w apps/web run build"
+  }
+}
