@@ -1,0 +1,28 @@
+{
+  "name": "@circuit-trader/connectors",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Live MCP transports for Circuit Trader — CoinMarketCap Agent Hub + Trust Wallet Agent Kit. Keeps network/secrets out of the pure policy package.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "circuit-trader-policy": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

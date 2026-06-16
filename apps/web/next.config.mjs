@@ -5,7 +5,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ["circuit-trader-policy"],
+  transpilePackages: ["circuit-trader-policy", "@circuit-trader/connectors"],
   // Pin file tracing to the monorepo root (silences the multi-lockfile warning).
   outputFileTracingRoot: join(__dirname, "../../"),
 };

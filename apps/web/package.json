@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@circuit-trader/connectors": "*",
     "circuit-trader-policy": "*",
     "next": "^15.1.0",
     "react": "^19.0.0",

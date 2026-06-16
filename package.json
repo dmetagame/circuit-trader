@@ -8,9 +8,10 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "npm -w packages/policy run test",
+    "test": "npm -w packages/policy run test && npm -w packages/connectors run test",
     "build:policy": "npm -w packages/policy run build",
+    "build:connectors": "npm run build:policy && npm -w packages/connectors run build",
     "dev": "npm -w apps/web run dev",
-    "build:web": "npm run build:policy && npm -w apps/web run build"
+    "build:web": "npm run build:connectors && npm -w apps/web run build"
   }
 }
