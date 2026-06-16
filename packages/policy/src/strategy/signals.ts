@@ -48,10 +48,22 @@ export interface Signal {
   indicators: SignalIndicators | null;
 }
 
+/** The raw indicator bundle the decision rule operates on. */
+export interface SignalInputs {
+  smaFast: number;
+  smaSlow: number;
+  rsi: number;
+  roc: number;
+  /** Std-devs price is extended (entry guard). Default 0 when unknown (e.g. from a provider). */
+  zscore?: number;
+  /** Latest close ticked up vs the prior one (mean-reversion confirmation). Default false. */
+  turningUp?: boolean;
+}
+
 const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
 
 /**
- * Deterministic momentum + mean-reversion strategy.
+ * The decision rule: momentum + mean-reversion, shared by every signal source.
  *
  * - SELL (protective, takes priority): trend breaks down OR RSI overbought.
  * - BUY (momentum): uptrend + ROC confirmation + not overbought + not over-extended.
@@ -60,17 +72,10 @@ const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
  *
  * Direction is decided here; the LLM downstream can only confirm or veto it.
  */
-export function generateSignal(closes: number[], cfg: StrategyConfig, asset: string): Signal {
-  const need = Math.max(cfg.smaSlowPeriod, cfg.rsiPeriod + 1, cfg.rocPeriod + 1, cfg.zscorePeriod, 2);
-  if (closes.length < need) {
-    return { asset, action: "hold", strength: 0, reason: `insufficient data (<${need} closes)`, indicators: null };
-  }
-
-  const smaFast = sma(closes, cfg.smaFastPeriod);
-  const smaSlow = sma(closes, cfg.smaSlowPeriod);
-  const rsiVal = rsi(closes, cfg.rsiPeriod);
-  const rocVal = roc(closes, cfg.rocPeriod);
-  const z = zscore(closes, cfg.zscorePeriod);
+export function decideSignal(inp: SignalInputs, cfg: StrategyConfig, asset: string): Signal {
+  const { smaFast, smaSlow, rsi: rsiVal, roc: rocVal } = inp;
+  const z = inp.zscore ?? 0;
+  const turningUp = inp.turningUp ?? false;
   const indicators: SignalIndicators = { smaFast, smaSlow, rsi: rsiVal, roc: rocVal, zscore: z };
 
   const gap = smaSlow !== 0 ? (smaFast - smaSlow) / smaSlow : 0; // signed crossover gap
@@ -78,7 +83,6 @@ export function generateSignal(closes: number[], cfg: StrategyConfig, asset: str
   const trendDown = smaFast < smaSlow;
   const overbought = rsiVal >= cfg.rsiOverbought;
   const oversold = rsiVal <= cfg.rsiOversold;
-  const turningUp = last(closes) > (closes[closes.length - 2] as number);
 
   const momentumBuy = trendUp && rocVal >= cfg.rocBuyThresholdPct && !overbought && z <= cfg.zscoreEntryMax;
   const meanRevBuy = oversold && turningUp;
@@ -111,4 +115,33 @@ export function generateSignal(closes: number[], cfg: StrategyConfig, asset: str
   }
 
   return { asset, action: "hold", strength: 0, reason: "no entry/exit condition met", indicators };
+}
+
+/** Signal from a raw closes series (oldest → newest). Used by the simulator and tests. */
+export function generateSignal(closes: number[], cfg: StrategyConfig, asset: string): Signal {
+  const need = Math.max(cfg.smaSlowPeriod, cfg.rsiPeriod + 1, cfg.rocPeriod + 1, cfg.zscorePeriod, 2);
+  if (closes.length < need) {
+    return { asset, action: "hold", strength: 0, reason: `insufficient data (<${need} closes)`, indicators: null };
+  }
+  return decideSignal(
+    {
+      smaFast: sma(closes, cfg.smaFastPeriod),
+      smaSlow: sma(closes, cfg.smaSlowPeriod),
+      rsi: rsi(closes, cfg.rsiPeriod),
+      roc: roc(closes, cfg.rocPeriod),
+      zscore: zscore(closes, cfg.zscorePeriod),
+      turningUp: last(closes) > (closes[closes.length - 2] as number),
+    },
+    cfg,
+    asset,
+  );
+}
+
+/**
+ * Signal from precomputed indicators (e.g. CoinMarketCap's technical-analysis tool:
+ * SMA-fast, SMA-slow, RSI, and a percent-change as ROC). No closes series required —
+ * the live path, with no warmup.
+ */
+export function signalFromIndicators(inp: SignalInputs, cfg: StrategyConfig, asset: string): Signal {
+  return decideSignal(inp, cfg, asset);
 }

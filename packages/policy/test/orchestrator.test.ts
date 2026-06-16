@@ -139,41 +139,61 @@ describe("runTick", () => {
   });
 });
 
-describe("CmcMcpSource (adapter over a mock MCP transport)", () => {
+describe("CmcMcpSource (adapter over a mock MCP transport — live tool surface)", () => {
+  // Shapes mirror the real CoinMarketCap Agent Hub MCP (verified 2026-06-16).
   const transport: McpTransport = {
-    async callTool(name) {
+    async callTool(name, args) {
       switch (name) {
-        case "cryptocurrency_quotes_historical":
-          return { data: [{ close: 100 }, { close: 101 }, { close: 102 }] };
-        case "cryptocurrency_trending_latest":
-          return { sentimentScore: 0.42 };
-        case "derivatives_funding_rate":
-          return { fundingRate: 0.0005 }; // -> 0.05%
+        case "get_crypto_technical_analysis":
+          return {
+            // Note the thousands separator on the slow SMA — CMC formats large numbers this way.
+            moving_averages: { simple_moving_average_7_day: "604.37", simple_moving_average_30_day: "1,633.99" },
+            rsi: { rsi7: "53.64", rsi14: "47.97", rsi21: "47.57" },
+            macd: { macdLine: "-11.15" },
+          };
+        case "get_crypto_quotes_latest":
+          return [{ id: args.id, symbol: "BNB", price: 606.4, percent_change_7d: 2.69, percent_change_24h: -3.0, volume_change_24h: 7.75 }];
+        case "search_cryptos":
+          return [{ id: 99999, symbol: String(args.query), name: String(args.query) }];
         default:
           throw new Error(`unexpected tool ${name}`);
       }
     },
   };
 
-  it("parses closes and soft context", async () => {
-    const src = new CmcMcpSource({ transport });
-    const m = await src.getMarketData("BNB");
-    expect(m.closes).toEqual([100, 101, 102]);
-    expect(m.narrativeScore).toBeCloseTo(0.42);
-    expect(m.fundingRatePct).toBeCloseTo(0.05);
+  it("maps technical analysis + latest quote into precomputed signal indicators", async () => {
+    const src = new CmcMcpSource({ transport, rocWindow: "7d" });
+    const m = await src.getMarketData("BNB"); // BNB id is statically known -> no search call
+    expect(m.indicators).toMatchObject({ smaFast: 604.37, smaSlow: 1633.99, rsi: 47.97, roc: 2.69, turningUp: false });
+    expect(m.priceUsd).toBeCloseTo(606.4);
+    expect(m.volumeChangePct).toBeCloseTo(7.75);
+    expect(m.closes).toEqual([]); // indicators path supplies no candle series
   });
 
-  it("still returns prices when a soft signal tool fails", async () => {
-    const flaky: McpTransport = {
-      async callTool(name) {
-        if (name === "cryptocurrency_quotes_historical") return { closes: [10, 11, 12] };
-        throw new Error("soft tool down");
+  it("resolves an unknown symbol via search_cryptos", async () => {
+    let searched = false;
+    const t: McpTransport = {
+      async callTool(name, args) {
+        if (name === "search_cryptos") {
+          searched = true;
+          return [{ id: 1839, symbol: "BNB" }];
+        }
+        return transport.callTool(name, args);
       },
     };
-    const src = new CmcMcpSource({ transport: flaky });
-    const m = await src.getMarketData("BNB");
-    expect(m.closes).toEqual([10, 11, 12]);
-    expect(m.narrativeScore).toBeUndefined();
-    expect(m.fundingRatePct).toBeUndefined();
+    const src = new CmcMcpSource({ transport: t });
+    await src.getMarketData("WIF"); // not in the static id map
+    expect(searched).toBe(true);
+  });
+
+  it("throws when technical analysis is incomplete", async () => {
+    const bad: McpTransport = {
+      async callTool(name) {
+        if (name === "get_crypto_technical_analysis") return { moving_averages: {}, rsi: {} };
+        return [{ price: 1 }];
+      },
+    };
+    const src = new CmcMcpSource({ transport: bad });
+    await expect(src.getMarketData("BNB")).rejects.toThrow(/incomplete/);
   });
 });

@@ -37,11 +37,14 @@ export type {
 export * as indicators from "./strategy/indicators.js";
 export {
   generateSignal,
+  signalFromIndicators,
+  decideSignal,
   DEFAULT_STRATEGY,
   type StrategyConfig,
   type Signal,
   type SignalAction,
   type SignalIndicators,
+  type SignalInputs,
 } from "./strategy/signals.js";
 export {
   deterministicSynthesizer,
@@ -54,10 +57,13 @@ export {
 export { claudeSynthesizer, type ClaudeSynthesizerOptions } from "./strategy/claude-synthesizer.js";
 export {
   proposeTrade,
+  buildProposalFromSignal,
   type AssetMarketData,
   type SizingConfig,
   type Quote,
+  type SoftSignals,
   type ProposeArgs,
+  type BuildProposalArgs,
   type StrategyOutput,
 } from "./strategy/strategy.js";
 
@@ -85,6 +91,7 @@ export {
   FixtureMarketSource,
   CmcMcpSource,
   DEFAULT_CMC_TOOLS,
+  CMC_IDS,
   type MarketDataSource,
   type MarketSignals,
   type McpTransport,

@@ -13,7 +13,10 @@ export interface CmcConnectorOptions {
   url?: string;
   apiKey?: string;
   tools?: Partial<CmcTools>;
-  lookback?: number;
+  /** Which percent_change_* window to use as ROC. Default "7d". */
+  rocWindow?: "1h" | "24h" | "7d" | "30d";
+  /** Seed/override symbol -> CMC id. */
+  ids?: Record<string, number>;
 }
 
 export const CMC_MCP_URL = "https://mcp.coinmarketcap.com/mcp";
@@ -37,7 +40,8 @@ export function createCmcMarketSource(opts: CmcConnectorOptions = {}): {
   const source = new CmcMcpSource({
     transport,
     ...(opts.tools ? { tools: opts.tools } : {}),
-    ...(opts.lookback != null ? { lookback: opts.lookback } : {}),
+    ...(opts.rocWindow ? { rocWindow: opts.rocWindow } : {}),
+    ...(opts.ids ? { ids: opts.ids } : {}),
   });
 
   return { source, transport };

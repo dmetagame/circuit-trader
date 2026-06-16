@@ -7,12 +7,17 @@ import {
   rollDay,
   type RuntimeState,
 } from "../state.js";
-import { generateSignal, type Signal, type StrategyConfig } from "../strategy/signals.js";
+import { generateSignal, signalFromIndicators, type Signal, type StrategyConfig } from "../strategy/signals.js";
 import { deterministicSynthesizer, type Synthesizer, type Verdict } from "../strategy/synthesizer.js";
-import { proposeTrade, type SizingConfig } from "../strategy/strategy.js";
+import { buildProposalFromSignal, type SizingConfig } from "../strategy/strategy.js";
 import { SlippageExceededError, type Fill, type Portfolio, type Wallet } from "../execution/wallet.js";
 import type { PolicyDecision } from "../types.js";
-import type { MarketDataSource } from "./market-source.js";
+import type { MarketDataSource, MarketSignals } from "./market-source.js";
+
+/** Use precomputed indicators when the source provides them (live CMC), else compute from closes. */
+function computeSignal(signals: MarketSignals, cfg: StrategyConfig, asset: string): Signal {
+  return signals.indicators ? signalFromIndicators(signals.indicators, cfg, asset) : generateSignal(signals.closes, cfg, asset);
+}
 
 export interface OrchestratorConfig {
   strategy: StrategyConfig;
@@ -115,26 +120,28 @@ export async function runTick(input: TickInput): Promise<TickResult> {
       const signals = await market.getMarketData(asset);
       const tokenRiskScore = await wallet.getTokenRiskScore(asset);
 
-      // Peek the deterministic signal so we can fetch a side-correct quote before proposing.
-      const peek = generateSignal(signals.closes, config.strategy, asset);
-      r.signal = peek;
-      if (peek.action === "hold" || peek.strength < config.sizing.minStrengthToTrade) {
-        r.audit.push(`HOLD ${asset}: ${peek.reason}`);
+      // Decide the signal (precomputed indicators from CMC, or computed from closes), so we
+      // can fetch a side-correct quote before building the proposal.
+      const signal = computeSignal(signals, config.strategy, asset);
+      r.signal = signal;
+      if (signal.action === "hold" || signal.strength < config.sizing.minStrengthToTrade) {
+        r.audit.push(`HOLD ${asset}: ${signal.reason}`);
         results.push(r);
         continue;
       }
 
-      const quote = await wallet.getQuote({ asset, side: peek.action, sizeUsd: config.sizing.baseTradeUsd * peek.strength });
-      const out = await proposeTrade({
-        market: { asset, closes: signals.closes, fundingRatePct: signals.fundingRatePct, narrativeScore: signals.narrativeScore, volumeChangePct: signals.volumeChangePct, tokenRiskScore },
-        strategy: config.strategy,
+      const quote = await wallet.getQuote({ asset, side: signal.action, sizeUsd: config.sizing.baseTradeUsd * signal.strength });
+      const out = await buildProposalFromSignal({
+        signal,
+        asset,
+        tokenRiskScore,
+        soft: { fundingRatePct: signals.fundingRatePct, narrativeScore: signals.narrativeScore, volumeChangePct: signals.volumeChangePct },
         sizing: config.sizing,
         synthesizer,
         now,
         quote: { expectedSlippageBps: quote.expectedSlippageBps, quoteId: quote.quoteId },
         ...(config.disagreementConfidenceCap != null ? { disagreementConfidenceCap: config.disagreementConfidenceCap } : {}),
       });
-      r.signal = out.signal;
       r.verdict = out.verdict;
 
       if (!out.proposal) {
