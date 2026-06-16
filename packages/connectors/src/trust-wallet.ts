@@ -1,41 +1,60 @@
 import { TrustWalletWallet, type TwakToolNames } from "circuit-trader-policy";
-import { McpHttpTransport } from "./mcp-transport.js";
+import { McpStdioTransport, stringEnv } from "./mcp-stdio.js";
 
 /**
- * Wire a live Trust Wallet Agent Kit wallet over its MCP server.
+ * Wire a live Trust Wallet Agent Kit wallet by spawning its local MCP server (`twak serve`,
+ * stdio). Verified against @trustwallet/cli v0.19.1 (2026-06-16): `serve` starts an MCP stdio
+ * server; credentials come from `TWAK_ACCESS_ID` / `TWAK_HMAC_SECRET` (or the CLI keychain via
+ * `twak setup`). The CLI does the HMAC signing — this process never holds the signing secret
+ * in a header.
  *
- * ⚠️ EXTERNAL SEAM — verify against the current Trust Wallet Agent Kit docs:
- *   - `TWAK_MCP_URL`: the Agent Kit MCP endpoint. If you run TWAK as a LOCAL MCP server
- *     (stdio) rather than hosted HTTP, swap `McpHttpTransport` for a stdio transport — the
- *     `{ callTool }` shape is identical, so nothing downstream changes.
- *   - Auth header: defaulted to `Authorization: Bearer <TWAK_API_KEY>`. Confirm the real
- *     header name/scheme and adjust below.
- *   - Tool names: `DEFAULT_TOOL_NAMES` in the policy package's TrustWalletWallet; override
- *     via `toolNames` if they differ.
+ * ⚠️ STILL TO VERIFY (needs valid creds to connect): the exact MCP tool names `twak serve`
+ * exposes and their response shapes. They're isolated in the policy package's
+ * `DEFAULT_TOOL_NAMES` + TrustWalletWallet parsers — connect once with creds, run tools/list,
+ * and override `toolNames` / adjust parsers in one place.
+ *
+ * Note: spawning a CLI rules out Vercel serverless for the live trade loop — run the
+ * orchestrator on a worker/VM that can launch `twak`. The dashboard (simulated wallet) still
+ * deploys to Vercel fine.
  */
 export interface TrustWalletConnectorOptions {
   walletAddress?: string;
-  url?: string;
-  apiKey?: string;
+  /** Path/name of the twak binary. Default: $TWAK_BIN or "twak" on PATH. */
+  command?: string;
+  accessId?: string;
+  hmacSecret?: string;
   chainId?: number;
   reserveAsset?: string;
   toolNames?: Partial<TwakToolNames>;
+  /** Extra args appended to `twak serve` (e.g. ["--password", "..."]). */
+  extraServeArgs?: string[];
 }
 
 export function createTrustWalletWallet(opts: TrustWalletConnectorOptions = {}): {
   wallet: TrustWalletWallet;
-  transport: McpHttpTransport;
+  transport: McpStdioTransport;
 } {
-  const url = opts.url ?? process.env.TWAK_MCP_URL;
-  if (!url) throw new Error("TWAK_MCP_URL is required (Trust Wallet Agent Kit MCP endpoint)");
+  const command = opts.command ?? process.env.TWAK_BIN ?? "twak";
 
   const walletAddress = opts.walletAddress ?? process.env.AGENT_WALLET_ADDRESS;
   if (!walletAddress) throw new Error("AGENT_WALLET_ADDRESS is required (the dedicated agent wallet)");
 
-  const apiKey = opts.apiKey ?? process.env.TWAK_API_KEY;
-  const headers: Record<string, string> = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  const accessId = opts.accessId ?? process.env.TWAK_ACCESS_ID;
+  const hmacSecret = opts.hmacSecret ?? process.env.TWAK_HMAC_SECRET;
 
-  const transport = new McpHttpTransport({ url, headers, clientName: "circuit-trader-twak" });
+  // Pass creds (when provided) through to the child; otherwise the CLI falls back to its keychain.
+  const env: Record<string, string> = {
+    ...stringEnv(process.env),
+    ...(accessId ? { TWAK_ACCESS_ID: accessId } : {}),
+    ...(hmacSecret ? { TWAK_HMAC_SECRET: hmacSecret } : {}),
+  };
+
+  const transport = new McpStdioTransport({
+    command,
+    args: ["--no-analytics", "serve", ...(opts.extraServeArgs ?? [])],
+    env,
+    clientName: "circuit-trader-twak",
+  });
 
   const wallet = new TrustWalletWallet({
     transport,
