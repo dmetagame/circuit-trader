@@ -62,8 +62,9 @@ describe("SimulatedWallet", () => {
 
 describe("TrustWalletWallet (adapter over a mock MCP transport — live twak serve tools)", () => {
   // Shapes mirror the real `twak serve` MCP tools (verified 2026-06-16).
+  const USDT_ADDR = "0x55d398326f99059fF775485246999027B3197955";
   const transport: TwakTransport = {
-    async callTool(name) {
+    async callTool(name, args) {
       switch (name) {
         case "get_token_price":
           return { success: true, token: "BNB", chain: "bsc", priceUsd: 600 };
@@ -73,14 +74,19 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
           return { success: true, txHash: "0x" + "ab".repeat(32), output: "0.00819 BNB", priceImpact: "0.35" };
         case "check_token_risk":
           return { success: true, symbol: "BNB", riskLevel: "low", isHoneypot: false };
-        case "get_token_holdings":
-          return { chain: "bsc", tokens: [{ symbol: "USDT", valueUsd: 80 }, { symbol: "BNB", valueUsd: 20 }] };
+        case "get_address":
+          return { chain: "bsc", address: "0x" + "1".repeat(40) };
+        case "get_balance":
+          // Native (no tokenAddress) -> BNB position; tokenAddress -> USDT reserve.
+          return args.tokenAddress
+            ? { slug: "Tether-USD", amounts: { total: "80000000000000000000", totalInFiat: "80" } }
+            : { slug: "bnb", amounts: { total: "33000000000000000", totalInFiat: "20" } };
         default:
           throw new Error(`unexpected tool ${name}`);
       }
     },
   };
-  const w = new TrustWalletWallet({ transport, chain: "bsc" });
+  const w = new TrustWalletWallet({ transport, chain: "bsc", tokenAddresses: { USDT: USDT_ADDR } });
 
   it("maps quote / swap / risk / portfolio through the transport", async () => {
     const q = await w.getQuote({ asset: "BNB", side: "buy", sizeUsd: 5 });
@@ -119,6 +125,33 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
     await expect(
       gw.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW),
     ).rejects.toBeInstanceOf(SlippageExceededError);
+  });
+
+  it("derives realized slippage from output when the live swap omits priceImpact", async () => {
+    // The live `swap` tool returns txHash + output but no priceImpact (verified 2026-06-17).
+    // Expected out for $5 at $500 = 0.01 BNB; a 0.0098 fill = 200bps realized -> over a 75bps cap.
+    const noImpact: TwakTransport = {
+      async callTool(name) {
+        if (name === "get_token_price") return { priceUsd: 500 };
+        return { success: true, txHash: "0x" + "ef".repeat(32), output: "0.0098 BNB" };
+      },
+    };
+    const w2 = new TrustWalletWallet({ transport: noImpact, chain: "bsc" });
+    await expect(
+      w2.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW),
+    ).rejects.toBeInstanceOf(SlippageExceededError);
+
+    // A tight fill (0.00999 BNB = 10bps) clears the same cap and reports the realized slippage.
+    const tight: TwakTransport = {
+      async callTool(name) {
+        if (name === "get_token_price") return { priceUsd: 500 };
+        return { success: true, txHash: "0x" + "12".repeat(32), output: "0.00999 BNB" };
+      },
+    };
+    const w3 = new TrustWalletWallet({ transport: tight, chain: "bsc" });
+    const fill = await w3.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW);
+    expect(fill.slippageBps).toBe(10);
+    expect(fill.filledUsd).toBe(5);
   });
 });
 

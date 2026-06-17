@@ -23,6 +23,8 @@ export interface TrustWalletConnectorOptions {
   nativeSymbol?: string;
   /** Contract addresses for non-native allowlisted tokens (for per-token risk checks). */
   tokenAddresses?: Record<string, string>;
+  /** Bound wallet address; if omitted the adapter resolves it via the `address` tool. */
+  address?: string;
   toolNames?: Partial<TwakToolNames>;
   /** Extra args appended to `twak serve` (e.g. ["--password", "..."]). */
   extraServeArgs?: string[];
@@ -56,6 +58,7 @@ export function createTrustWalletWallet(opts: TrustWalletConnectorOptions = {}):
     ...(opts.reserveAsset ? { reserveAsset: opts.reserveAsset } : {}),
     ...(opts.nativeSymbol ? { nativeSymbol: opts.nativeSymbol } : {}),
     ...(opts.tokenAddresses ? { tokenAddresses: opts.tokenAddresses } : {}),
+    ...(opts.address ? { address: opts.address } : {}),
     ...(opts.toolNames ? { toolNames: opts.toolNames } : {}),
   });
 

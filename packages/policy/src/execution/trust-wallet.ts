@@ -18,10 +18,14 @@ import {
  * symbols/addresses. Amounts are denominated in the FROM token (not USD), so USD sizing is
  * converted via `get_token_price`.
  *
- * VERIFIED read paths: get_swap_quote, get_token_price, check_token_risk.
- * ⚠️ PENDING a funded wallet to validate response shapes: `swap` (execution) and the
- *    holdings/portfolio aggregation — parsed defensively below; confirm with a tiny live swap
- *    before trusting drawdown accounting on mainnet.
+ * VERIFIED LIVE (funded BSC wallet, 2026-06-17): get_swap_quote, get_token_price,
+ * check_token_risk, get_address, get_balance.
+ *
+ * Portfolio note: `get_token_holdings` returns `[]` unless the address is indexed by the
+ * Trust Wallet backend (and that index lags), so it is NOT reliable for drawdown accounting.
+ * We instead value the reserve + native + allowlisted tokens directly via `get_balance`,
+ * which returns on-chain USD (`amounts.totalInFiat`) with no backend-index dependency.
+ * ⚠️ STILL PENDING: `swap` (execution) response shape — confirm with a tiny live swap.
  */
 
 export interface TwakTransport {
@@ -33,8 +37,10 @@ export interface TwakToolNames {
   swap: string;
   tokenRisk: string;
   tokenPrice: string;
-  holdings: string;
-  nativeBalance: string;
+  /** On-chain USD-valued balance for native or a given tokenAddress. */
+  balance: string;
+  /** Resolve the bound wallet's address for a chain. */
+  address: string;
 }
 
 export const DEFAULT_TOOL_NAMES: TwakToolNames = {
@@ -42,8 +48,8 @@ export const DEFAULT_TOOL_NAMES: TwakToolNames = {
   swap: "swap",
   tokenRisk: "check_token_risk",
   tokenPrice: "get_token_price",
-  holdings: "get_token_holdings",
-  nativeBalance: "wallet_balance",
+  balance: "get_balance",
+  address: "get_address",
 };
 
 export interface TrustWalletWalletConfig {
@@ -58,6 +64,8 @@ export interface TrustWalletWalletConfig {
   nativeSymbol?: string;
   /** Contract addresses for non-native allowlisted tokens (needed for per-token risk checks). */
   tokenAddresses?: Record<string, string>;
+  /** Bound wallet address. If omitted, resolved lazily via the `address` tool and cached. */
+  address?: string;
   toolNames?: Partial<TwakToolNames>;
 }
 
@@ -104,6 +112,7 @@ export class TrustWalletWallet implements Wallet {
   private readonly nativeSymbol: string;
   private readonly tokenAddresses: Record<string, string>;
   private readonly tools: TwakToolNames;
+  private address: string | null;
 
   constructor(cfg: TrustWalletWalletConfig) {
     this.t = cfg.transport;
@@ -113,6 +122,30 @@ export class TrustWalletWallet implements Wallet {
     this.nativeSymbol = cfg.nativeSymbol ?? "BNB";
     this.tokenAddresses = cfg.tokenAddresses ?? {};
     this.tools = { ...DEFAULT_TOOL_NAMES, ...cfg.toolNames };
+    this.address = cfg.address ?? null;
+  }
+
+  /** Resolve (and cache) the bound wallet address for this chain. */
+  private async boundAddress(): Promise<string> {
+    if (this.address) return this.address;
+    const r = rec(await this.t.callTool(this.tools.address, { chain: this.chain }));
+    const a = String(r.address ?? "");
+    if (!a) throw new Error(`could not resolve bound wallet address on ${this.chain}`);
+    this.address = a;
+    return a;
+  }
+
+  /** On-chain USD value of a symbol's balance via get_balance → amounts.totalInFiat. */
+  private async balanceUsd(asset: string, address: string): Promise<number> {
+    const args: Record<string, unknown> = { chain: this.chain, address };
+    if (asset !== this.nativeSymbol) {
+      const addr = this.tokenAddresses[asset];
+      if (!addr) return 0; // can't value an unknown token without its contract
+      args.tokenAddress = addr;
+    }
+    const r = rec(await this.t.callTool(this.tools.balance, args));
+    const amounts = rec(r.amounts);
+    return num(amounts.totalInFiat ?? amounts.availableInFiat, 0);
   }
 
   /** USD price for a symbol via get_token_price → { priceUsd }. */
@@ -174,11 +207,23 @@ export class TrustWalletWallet implements Wallet {
 
     if (r.success === false) throw new Error(`swap failed: ${String(r.error ?? r.message ?? "unknown")}`);
 
-    const slippageBps = r.priceImpact != null ? Math.round(num(r.priceImpact, 0) * 100) : order.maxSlippageBps;
-    if (slippageBps > order.maxSlippageBps) throw new SlippageExceededError(slippageBps, order.maxSlippageBps);
-
     // Output amount is in the TO token; USD notional = output * (reserve≈$1 on buy→USD via price on sell).
     const outAmount = leadingNum(r.output, NaN);
+
+    // Prefer the tool's reported priceImpact; the live `swap` tool often omits it, so derive
+    // realized slippage from the fill itself (expected vs actual output) rather than assuming the cap.
+    let slippageBps: number;
+    if (r.priceImpact != null) {
+      slippageBps = Math.round(num(r.priceImpact, 0) * 100);
+    } else {
+      const expectedOut = order.side === "buy" ? order.sizeUsd / price : order.sizeUsd;
+      slippageBps =
+        !Number.isNaN(outAmount) && expectedOut > 0
+          ? Math.max(0, Math.round((1 - outAmount / expectedOut) * 10_000))
+          : order.maxSlippageBps;
+    }
+    if (slippageBps > order.maxSlippageBps) throw new SlippageExceededError(slippageBps, order.maxSlippageBps);
+
     const filledUsd =
       order.side === "buy"
         ? order.sizeUsd // spent ~sizeUsd of the reserve stablecoin
@@ -198,20 +243,17 @@ export class TrustWalletWallet implements Wallet {
   }
 
   async getPortfolio(): Promise<Portfolio> {
-    // Aggregate the bound wallet's holdings into USD. Shapes vary by chain; parse defensively.
-    const r = rec(await this.t.callTool(this.tools.holdings, { chain: this.chain }));
-    const tokens = Array.isArray(r.tokens) ? r.tokens : [];
+    // Value the reserve + native + allowlisted tokens directly on-chain via get_balance.
+    // (get_token_holdings depends on a lagging backend index and can't be trusted for drawdown.)
+    const address = await this.boundAddress();
+    const symbols = new Set<string>([this.reserveAsset, this.nativeSymbol, ...Object.keys(this.tokenAddresses)]);
 
     let reserveUsd = 0;
     const positions: Record<string, number> = {};
-    for (const row of tokens) {
-      const tk = rec(row);
-      const symbol = String(tk.symbol ?? tk.token ?? "");
-      if (!symbol) continue;
-      const usd = num(tk.valueUsd ?? tk.usdValue ?? tk.balanceUsd, NaN);
-      const value = !Number.isNaN(usd) ? usd : num(tk.balance ?? tk.amount, 0) * num(tk.priceUsd, 0);
-      if (symbol === this.reserveAsset) reserveUsd += value;
-      else if (value > 0) positions[symbol] = (positions[symbol] ?? 0) + value;
+    for (const symbol of symbols) {
+      const usd = await this.balanceUsd(symbol, address);
+      if (symbol === this.reserveAsset) reserveUsd += usd;
+      else if (usd > 0) positions[symbol] = (positions[symbol] ?? 0) + usd;
     }
 
     const positionsUsd = Object.values(positions).reduce((a, b) => a + b, 0);
