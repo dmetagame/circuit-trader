@@ -1,9 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { useGSAP } from "@gsap/react";
 import type { Snapshot, TickView, AssetView } from "@/lib/session";
+import { Logo, LOGO_NODE_CLASS, LOGO_TRACE_CLASS, LOGO_SWITCH_CLASS } from "@/components/brand/Logo";
+import { AnimatedNumber } from "@/components/AnimatedNumber";
 
-const fmt = (n: number) => `$${n.toFixed(2)}`;
+gsap.registerPlugin(useGSAP, ScrollTrigger);
+
+// Stable formatters (identity matters — AnimatedNumber takes `format` as a dep).
+const fmtUsd = (n: number) => `$${n.toFixed(2)}`;
+const fmtPct = (n: number) => `${n.toFixed(1)}%`;
+const fmtInt = (n: number) => `${Math.round(n)}`;
+const fmt = fmtUsd;
+
+const NO_PREF = "(prefers-reduced-motion: no-preference)";
 
 async function call(path: string, method: "GET" | "POST"): Promise<Snapshot> {
   const res = await fetch(path, { method, cache: "no-store" });
@@ -13,121 +26,261 @@ async function call(path: string, method: "GET" | "POST"): Promise<Snapshot> {
 export default function Page() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [busy, setBusy] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const flash = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => setSnap(await call("/api/state", "GET")), []);
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  const run = useCallback(
-    async (path: string, times = 1) => {
-      setBusy(true);
-      try {
-        let s: Snapshot | null = null;
-        for (let i = 0; i < times; i++) s = await call(path, "POST");
-        if (s) setSnap(s);
-      } finally {
-        setBusy(false);
-      }
+  const run = useCallback(async (path: string, times = 1) => {
+    setBusy(true);
+    try {
+      let s: Snapshot | null = null;
+      for (let i = 0; i < times; i++) s = await call(path, "POST");
+      if (s) setSnap(s);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const loaded = snap != null;
+  const latest = snap?.timeline[0]?.index ?? 0;
+
+  // ── Intro: logo path-draw + node pulse, then staggered hero entrance. Runs once. ──
+  useGSAP(
+    () => {
+      const mm = gsap.matchMedia();
+      mm.add(NO_PREF, () => {
+        const q = gsap.utils.selector(root);
+        const tl = gsap.timeline({ defaults: { ease: "power3.out" } });
+
+        const trace = q(`.${LOGO_TRACE_CLASS}`)[0] as unknown as SVGPathElement | undefined;
+        const sw = q(`.${LOGO_SWITCH_CLASS}`)[0] as unknown as SVGLineElement | undefined;
+        const node = q(`.${LOGO_NODE_CLASS}`)[0] as unknown as SVGCircleElement | undefined;
+
+        if (trace) {
+          const l = trace.getTotalLength();
+          gsap.set(trace, { strokeDasharray: l, strokeDashoffset: l });
+          tl.to(trace, { strokeDashoffset: 0, duration: 0.9, ease: "power2.inOut" }, 0);
+        }
+        if (sw) {
+          const l = sw.getTotalLength();
+          gsap.set(sw, { strokeDasharray: l, strokeDashoffset: l });
+          tl.to(sw, { strokeDashoffset: 0, duration: 0.4 }, 0.62);
+        }
+        if (node) {
+          tl.fromTo(node, { scale: 0, svgOrigin: "26.19 11.88" }, { scale: 1, duration: 0.5, ease: "back.out(2.4)" }, 0.74)
+            .to(node, { opacity: 0.4, duration: 0.45, yoyo: true, repeat: 1, ease: "sine.inOut" }, ">-0.05");
+        }
+
+        tl.from(q(".ct-wordmark"), { opacity: 0, x: -8, duration: 0.5 }, 0.35)
+          .from(q(".hero .kicker"), { opacity: 0, y: 14, duration: 0.5 }, 0.45)
+          .from(q(".hero h1"), { opacity: 0, y: 20, duration: 0.65 }, "<0.05")
+          .from(q(".hero .lede"), { opacity: 0, y: 14, duration: 0.5 }, "<0.12")
+          .from(q(".chip"), { opacity: 0, y: 8, stagger: 0.06, duration: 0.4 }, "<");
+      });
+      return () => mm.revert();
     },
-    [],
+    { scope: root },
   );
 
-  if (!snap) return <div className="wrap"><div className="empty">Loading…</div></div>;
+  // ── First data paint: banner, counters, controls, and scroll-revealed panels. ──
+  useGSAP(
+    () => {
+      if (!loaded) return;
+      const mm = gsap.matchMedia();
+      mm.add(NO_PREF, () => {
+        const q = gsap.utils.selector(root);
+        gsap.from(q(".banner"), { opacity: 0, y: 10, duration: 0.5, ease: "power2.out" });
+        gsap.from(q(".card"), { opacity: 0, y: 16, stagger: 0.07, duration: 0.5, ease: "power3.out", delay: 0.05 });
+        gsap.from(q(".controls button"), { opacity: 0, y: 10, stagger: 0.05, duration: 0.4, delay: 0.2 });
+        q(".reveal").forEach((el) => {
+          gsap.from(el, {
+            opacity: 0,
+            y: 24,
+            duration: 0.6,
+            ease: "power3.out",
+            scrollTrigger: { trigger: el as Element, start: "top 88%" },
+          });
+        });
+      });
+      return () => mm.revert();
+    },
+    { dependencies: [loaded], scope: root },
+  );
 
-  const tripped = snap.killSwitch.engaged;
-  const ddClass = snap.drawdownPct >= snap.constitution.maxDrawdownPct ? "bad" : snap.drawdownPct > snap.constitution.maxDrawdownPct * 0.6 ? "warn" : "ok";
+  // ── Verdict timeline centerpiece: sequence the newest tick — row → verdict chip. ──
+  useGSAP(
+    () => {
+      if (!latest) return;
+      const mm = gsap.matchMedia();
+      mm.add(NO_PREF, () => {
+        const first = root.current?.querySelector(".timeline .tick");
+        if (!first) return;
+        const tl = gsap.timeline({ defaults: { ease: "power3.out" } });
+        tl.from(first, { opacity: 0, y: -12, duration: 0.45 })
+          .from(first.querySelectorAll(".row"), { opacity: 0, x: -10, stagger: 0.12, duration: 0.4 }, "<0.12")
+          .from(
+            first.querySelectorAll(".badge"),
+            { scale: 0.6, opacity: 0, stagger: 0.12, duration: 0.35, ease: "back.out(2.2)" },
+            "<",
+          );
+      });
+      return () => mm.revert();
+    },
+    { dependencies: [latest], scope: root },
+  );
+
+  // ── "Trigger crash" circuit-breaker beat — the demo's emotional peak. ──
+  const { contextSafe } = useGSAP({ scope: root });
+  const playCrashBeat = contextSafe(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const q = gsap.utils.selector(root);
+    const node = q(`.${LOGO_NODE_CLASS}`)[0];
+    const tl = gsap.timeline();
+    if (flash.current) {
+      tl.fromTo(flash.current, { opacity: 0 }, { opacity: 0.2, duration: 0.07, yoyo: true, repeat: 3, ease: "power1.inOut" }, 0);
+    }
+    tl.fromTo(root.current, { x: 0 }, { x: 5, duration: 0.045, repeat: 9, yoyo: true, ease: "none" }, 0).set(root.current, { x: 0 });
+    if (node) {
+      tl.to(node, { fill: "var(--deny)", scale: 1.6, svgOrigin: "26.19 11.88", duration: 0.18, yoyo: true, repeat: 1, ease: "power2.inOut" }, 0);
+    }
+  });
+
+  const onCrash = useCallback(() => {
+    playCrashBeat();
+    void run("/api/crash");
+  }, [playCrashBeat, run]);
+
+  const tripped = snap?.killSwitch.engaged ?? false;
 
   return (
-    <div className="wrap">
-      <div className="header">
-        <div className="title">
-          Circuit<span className="accent"> Trader</span>
+    <div className="wrap" ref={root}>
+      <div className="breaker-flash" ref={flash} aria-hidden />
+
+      <div className="topbar">
+        <Logo variant="lockup" size={30} />
+        <div className="chips">
+          <span className="chip">BNB Chain</span>
+          <span className="chip">CoinMarketCap</span>
+          <span className="chip">Trust Wallet</span>
         </div>
-        <div className="mono-sm" style={{ color: "var(--muted)" }}>
-          BNB Chain · CoinMarketCap · Trust Wallet
-        </div>
-      </div>
-      <div className="tagline">
-        An autonomous trading agent that <strong>cannot trade unless its own signed risk constitution allows it</strong>. The LLM proposes; the
-        constitution disposes. The drawdown cap mirrors the competition&apos;s DQ gate — survival is the edge.
       </div>
 
-      {tripped ? (
-        <div className="banner tripped">⛔ CIRCUIT BREAKER TRIPPED — {snap.killSwitch.reason ?? "kill switch engaged"}. Trading halted.</div>
+      <div className="hero">
+        <p className="kicker">Autonomous · Constitution-gated · BNB Chain</p>
+        <h1>
+          Survival is <span className="accent">the edge</span>.
+        </h1>
+        <p className="lede">
+          An autonomous trading agent that <strong>cannot trade unless its own signed risk constitution allows it</strong>. The LLM proposes; the
+          constitution disposes. The drawdown cap mirrors the competition&apos;s DQ gate.
+        </p>
+      </div>
+
+      {!snap ? (
+        <div className="empty">Loading…</div>
       ) : (
-        <div className="banner armed">● ARMED — constitution enforced on every order.</div>
-      )}
-
-      <div className="cards">
-        <div className="card">
-          <div className="label">Equity</div>
-          <div className="value">{fmt(snap.portfolio.equityUsd)}</div>
-          <div className="sub">reserve {fmt(snap.portfolio.reserveUsd)}</div>
-        </div>
-        <div className="card">
-          <div className="label">Drawdown</div>
-          <div className={`value ${ddClass}`}>{snap.drawdownPct.toFixed(1)}%</div>
-          <div className="sub">cap {snap.constitution.maxDrawdownPct}% · HWM {fmt(snap.highWaterMarkUsd)}</div>
-        </div>
-        <div className="card">
-          <div className="label">Kill switch</div>
-          <div className={`value ${tripped ? "bad" : "ok"}`}>{tripped ? "ENGAGED" : "ARMED"}</div>
-          <div className="sub">{snap.tickCount} ticks run</div>
-        </div>
-        <div className="card">
-          <div className="label">Positions</div>
-          <div className="value">{Object.keys(snap.portfolio.positions).length}</div>
-          <div className="sub">{Object.entries(snap.portfolio.positions).map(([a, v]) => `${a} ${fmt(v)}`).join(" · ") || "none"}</div>
-        </div>
-      </div>
-
-      <div className="controls">
-        <button className="primary" disabled={busy || tripped} onClick={() => run("/api/tick")}>
-          Run tick
-        </button>
-        <button disabled={busy || tripped} onClick={() => run("/api/tick", 3)}>
-          Run 3 ticks
-        </button>
-        <button className="danger" disabled={busy || tripped} onClick={() => run("/api/crash")}>
-          ⚡ Trigger crash
-        </button>
-        <button disabled={busy} onClick={() => run("/api/reset")}>
-          Reset
-        </button>
-      </div>
-
-      <div className="grid2">
-        <div className="panel">
-          <h2>Risk Constitution</h2>
-          <Kv k="Agent" v={snap.constitution.agentId} />
-          <Kv k="Chain" v={`BNB (${snap.constitution.chainId})`} />
-          <Kv k="Wallet" v={`${snap.constitution.walletAddress.slice(0, 6)}…${snap.constitution.walletAddress.slice(-4)}`} />
-          <Kv k="Allowed" v={snap.constitution.allowedAssets.join(", ")} />
-          <Kv k="Reserve" v={snap.constitution.reserveAsset} />
-          <Kv k="Max trade" v={fmt(snap.constitution.maxTradeUsd)} />
-          <Kv k="Max drawdown" v={`${snap.constitution.maxDrawdownPct}%`} />
-          <Kv k="Min confidence" v={snap.constitution.minSignalConfidence.toFixed(2)} />
-          <Kv k="Max token risk" v={String(snap.constitution.maxTokenRiskScore)} />
-        </div>
-
-        <div className="panel">
-          <h2>Decision Timeline</h2>
-          {snap.timeline.length === 0 ? (
-            <div className="empty">No ticks yet. Hit “Run tick”, then “Trigger crash” to see the circuit breaker fire.</div>
+        <>
+          {tripped ? (
+            <div className="banner tripped">⛔ CIRCUIT BREAKER TRIPPED — {snap.killSwitch.reason ?? "kill switch engaged"}. Trading halted.</div>
           ) : (
-            <div className="timeline">
-              {snap.timeline.map((t) => (
-                <Tick key={t.index} t={t} />
-              ))}
-            </div>
+            <div className="banner armed">● ARMED — constitution enforced on every order.</div>
           )}
-        </div>
-      </div>
 
-      <div className="foot">
-        Demo runs on a simulated wallet with a scripted price path — deterministic and luck-proof. Swap in the Trust Wallet Agent Kit + CoinMarketCap
-        MCP adapters for live BNB-chain settlement; the policy engine, strategy, and orchestrator are unchanged.
+          <Cards snap={snap} tripped={tripped} />
+
+          <div className="controls">
+            <button className="primary" disabled={busy || tripped} onClick={() => run("/api/tick")}>
+              Run tick
+            </button>
+            <button disabled={busy || tripped} onClick={() => run("/api/tick", 3)}>
+              Run 3 ticks
+            </button>
+            <button className="danger" disabled={busy || tripped} onClick={onCrash}>
+              ⚡ Trigger crash
+            </button>
+            <button disabled={busy} onClick={() => run("/api/reset")}>
+              Reset
+            </button>
+          </div>
+
+          <div className="section reveal">
+            <p className="eyebrow">Live decision surface</p>
+            <h2 className="section-title">The constitution, and every verdict it produces.</h2>
+          </div>
+
+          <div className="grid2">
+            <div className="panel reveal">
+              <h2>Risk Constitution</h2>
+              <Kv k="Agent" v={snap.constitution.agentId} />
+              <Kv k="Chain" v={`BNB (${snap.constitution.chainId})`} />
+              <Kv k="Wallet" v={`${snap.constitution.walletAddress.slice(0, 6)}…${snap.constitution.walletAddress.slice(-4)}`} />
+              <Kv k="Allowed" v={snap.constitution.allowedAssets.join(", ")} />
+              <Kv k="Reserve" v={snap.constitution.reserveAsset} />
+              <Kv k="Max trade" v={fmt(snap.constitution.maxTradeUsd)} />
+              <Kv k="Max drawdown" v={`${snap.constitution.maxDrawdownPct}%`} />
+              <Kv k="Min confidence" v={snap.constitution.minSignalConfidence.toFixed(2)} />
+              <Kv k="Max token risk" v={String(snap.constitution.maxTokenRiskScore)} />
+            </div>
+
+            <div className="panel reveal">
+              <h2>Decision Timeline</h2>
+              {snap.timeline.length === 0 ? (
+                <div className="empty">No ticks yet. Hit “Run tick”, then “Trigger crash” to see the circuit breaker fire.</div>
+              ) : (
+                <div className="timeline">
+                  {snap.timeline.map((t) => (
+                    <Tick key={t.index} t={t} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="foot reveal">
+            Demo runs on a simulated wallet with a scripted price path — deterministic and luck-proof. Swap in the Trust Wallet Agent Kit + CoinMarketCap
+            MCP adapters for live BNB-chain settlement; the policy engine, strategy, and orchestrator are unchanged.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Cards({ snap, tripped }: { snap: Snapshot; tripped: boolean }) {
+  const ddClass =
+    snap.drawdownPct >= snap.constitution.maxDrawdownPct ? "bad" : snap.drawdownPct > snap.constitution.maxDrawdownPct * 0.6 ? "warn" : "ok";
+  const posCount = Object.keys(snap.portfolio.positions).length;
+  return (
+    <div className="cards">
+      <div className="card">
+        <div className="label">Equity</div>
+        <div className="value">
+          <AnimatedNumber value={snap.portfolio.equityUsd} format={fmtUsd} />
+        </div>
+        <div className="sub">reserve {fmt(snap.portfolio.reserveUsd)}</div>
+      </div>
+      <div className="card">
+        <div className="label">Drawdown</div>
+        <div className={`value ${ddClass}`}>
+          <AnimatedNumber value={snap.drawdownPct} format={fmtPct} />
+        </div>
+        <div className="sub">cap {snap.constitution.maxDrawdownPct}% · HWM {fmt(snap.highWaterMarkUsd)}</div>
+      </div>
+      <div className="card">
+        <div className="label">Kill switch</div>
+        <div className={`value ${tripped ? "bad" : "ok"}`}>{tripped ? "ENGAGED" : "ARMED"}</div>
+        <div className="sub">{snap.tickCount} ticks run</div>
+      </div>
+      <div className="card">
+        <div className="label">Positions</div>
+        <div className="value">
+          <AnimatedNumber value={posCount} format={fmtInt} />
+        </div>
+        <div className="sub">{Object.entries(snap.portfolio.positions).map(([a, v]) => `${a} ${fmt(v)}`).join(" · ") || "none"}</div>
       </div>
     </div>
   );
@@ -146,7 +299,9 @@ function Tick({ t }: { t: TickView }) {
   return (
     <div className={`tick ${t.killSwitch ? "tripped" : ""}`}>
       <div className="tick-head">
-        <span className="idx">#{t.index} · {new Date(t.now).toLocaleTimeString()}</span>
+        <span className="idx">
+          #{t.index} · {new Date(t.now).toLocaleTimeString()}
+        </span>
         <span className="eq">
           equity {fmt(t.equityUsd)} · dd {t.drawdownPct.toFixed(1)}%
         </span>
