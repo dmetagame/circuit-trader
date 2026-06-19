@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { get, put } from "@vercel/blob";
+import { BlobNotFoundError, get, put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
 import { isLiveEnvelope, type LiveEnvelope } from "@/lib/live";
 
@@ -10,15 +10,21 @@ const SNAPSHOT_PATH = "circuit-trader/live/latest.json";
 
 export async function GET() {
   try {
-    const result = await get(SNAPSHOT_PATH, { access: "private", useCache: false });
-    if (!result) return NextResponse.json({ available: false }, { status: 404 });
+    const result = await get(SNAPSHOT_PATH, { access: "private" });
+    if (!result?.stream) return NextResponse.json({ available: false }, { status: 404 });
     const value: unknown = await new Response(result.stream).json();
     if (!isLiveEnvelope(value)) {
       return NextResponse.json({ error: "stored live snapshot is invalid" }, { status: 500 });
     }
-    return NextResponse.json(value, { headers: { "Cache-Control": "no-store" } });
+    // The snapshot only changes once per worker tick; let the CDN serve it. Clients poll
+    // every 30s and surface their own staleness banner, so a short shared cache is safe.
+    return NextResponse.json(value, {
+      headers: { "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=60" },
+    });
   } catch (error) {
-    if (isMissingBlobConfiguration(error)) {
+    // No snapshot yet (worker hasn't posted) or Blob store not configured — both are an
+    // expected "not available" state for the dashboard, not a server fault.
+    if (error instanceof BlobNotFoundError || isMissingBlobConfiguration(error)) {
       return NextResponse.json({ available: false }, { status: 404 });
     }
     throw error;
