@@ -12,6 +12,10 @@
     "build:policy": "npm -w packages/policy run build",
     "build:connectors": "npm run build:policy && npm -w packages/connectors run build",
     "dev": "npm -w apps/web run dev",
-    "build:web": "npm run build:connectors && npm -w apps/web run build"
+    "build:web": "npm run build:connectors && npm -w apps/web run build",
+    "constitution:sign": "npm run build:policy && node scripts/sign-constitution.mjs",
+    "live:check": "npm run build:connectors && node scripts/live-runner.mjs --check",
+    "live:once": "npm run build:connectors && node scripts/live-runner.mjs --once",
+    "live:runner": "npm run build:connectors && node scripts/live-runner.mjs"
   }
 }

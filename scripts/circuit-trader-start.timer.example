@@ -1,0 +1,11 @@
+[Unit]
+Description=Start Circuit Trader for the Track 1 trading window
+
+[Timer]
+OnCalendar=2026-06-22 00:05:00 UTC
+AccuracySec=1min
+Persistent=true
+Unit=circuit-trader.service
+
+[Install]
+WantedBy=timers.target

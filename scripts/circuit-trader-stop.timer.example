@@ -1,0 +1,11 @@
+[Unit]
+Description=Stop Circuit Trader after the Track 1 trading window
+
+[Timer]
+OnCalendar=2026-06-29 00:00:00 UTC
+AccuracySec=1min
+Persistent=true
+Unit=circuit-trader-stop.service
+
+[Install]
+WantedBy=timers.target
