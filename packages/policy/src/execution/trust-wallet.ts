@@ -33,6 +33,8 @@ export interface TwakTransport {
 }
 
 export interface TwakToolNames {
+  walletStatus: string;
+  switchWalletMode: string;
   quote: string;
   swap: string;
   tokenRisk: string;
@@ -44,6 +46,8 @@ export interface TwakToolNames {
 }
 
 export const DEFAULT_TOOL_NAMES: TwakToolNames = {
+  walletStatus: "get_wallet_status",
+  switchWalletMode: "switch_wallet_mode",
   quote: "get_swap_quote",
   swap: "swap",
   tokenRisk: "check_token_risk",
@@ -113,6 +117,7 @@ export class TrustWalletWallet implements Wallet {
   private readonly tokenAddresses: Record<string, string>;
   private readonly tools: TwakToolNames;
   private address: string | null;
+  private walletModeReady = false;
 
   constructor(cfg: TrustWalletWalletConfig) {
     this.t = cfg.transport;
@@ -127,12 +132,37 @@ export class TrustWalletWallet implements Wallet {
 
   /** Resolve (and cache) the bound wallet address for this chain. */
   private async boundAddress(): Promise<string> {
+    await this.ensureWalletMode();
     if (this.address) return this.address;
     const r = rec(await this.t.callTool(this.tools.address, { chain: this.chain }));
     const a = String(r.address ?? "");
     if (!a) throw new Error(`could not resolve bound wallet address on ${this.chain}`);
     this.address = a;
     return a;
+  }
+
+  /**
+   * TWAK may start in an explicit "unbound" session even when a local wallet exists.
+   * Bind the local agent wallet once before any operation that needs a wallet address
+   * or signing authority.
+   */
+  private async ensureWalletMode(): Promise<void> {
+    if (this.walletModeReady) return;
+
+    const before = rec(await this.t.callTool(this.tools.walletStatus, {}));
+    const state = String(before.state ?? "");
+    if (state === "local" || state === "wc-connected") {
+      this.walletModeReady = true;
+      return;
+    }
+
+    await this.t.callTool(this.tools.switchWalletMode, { mode: "local" });
+    const after = rec(await this.t.callTool(this.tools.walletStatus, {}));
+    const next = String(after.state ?? "");
+    if (next !== "local" && next !== "wc-connected") {
+      throw new Error(`wallet mode not bound after switch_wallet_mode: ${next || "unknown"}`);
+    }
+    this.walletModeReady = true;
   }
 
   /** On-chain USD value of a symbol's balance via get_balance → amounts.totalInFiat. */
@@ -191,6 +221,7 @@ export class TrustWalletWallet implements Wallet {
   }
 
   async executeSwap(order: SwapOrder, now: string): Promise<Fill> {
+    await this.ensureWalletMode();
     const price = await this.priceUsd(order.asset);
     const { fromToken, toToken, amount } = this.legs(order.side, order.asset, order.sizeUsd, price);
 

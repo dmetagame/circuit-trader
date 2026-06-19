@@ -1,0 +1,6 @@
+[Unit]
+Description=Stop Circuit Trader after the Track 1 trading window
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user stop circuit-trader.service

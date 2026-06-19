@@ -4,6 +4,7 @@ import {
   initState,
   parseConstitution,
   claudeSynthesizer,
+  deterministicSynthesizer,
   DEFAULT_STRATEGY,
   type Constitution,
 } from "circuit-trader-policy";
@@ -16,17 +17,31 @@ export const maxDuration = 60;
 const ASSETS = (process.env.AGENT_ASSETS ?? "BNB,ETH,CAKE").split(",").map((s) => s.trim());
 
 /**
- * Live orchestration tick. Wired for Vercel Cron (see apps/web/vercel.json).
+ * Optional live orchestration tick for a self-hosted Next process.
+ *
+ * Do not run this on Vercel serverless: the live Trust Wallet path spawns `twak serve`
+ * over stdio. Use `npm run live:runner` on a VM/worker for Track 1.
+ *
  * Pulls signals from CoinMarketCap (MCP), runs the policy engine with Claude as the bounded
  * risk reviewer, and settles cleared trades through Trust Wallet on BNB Chain.
  *
- * Env required (see .env.example): CMC_MCP_API_KEY, TWAK_MCP_URL, TWAK_API_KEY,
- * AGENT_WALLET_ADDRESS, ANTHROPIC_API_KEY, CONSTITUTION_JSON, CRON_SECRET.
+ * Env required (see .env.example): ENABLE_NEXT_API_LIVE_RUNNER=true, CRON_SECRET,
+ * CMC_MCP_API_KEY, TWAK_ACCESS_ID/TWAK_HMAC_SECRET or TWAK keychain, and
+ * CONSTITUTION_JSON. ANTHROPIC_API_KEY is only required when SYNTHESIZER_MODE=claude.
  */
 export async function GET(req: Request): Promise<Response> {
-  // Vercel Cron sends `Authorization: Bearer <CRON_SECRET>`. Reject anything else.
+  if (process.env.ENABLE_NEXT_API_LIVE_RUNNER !== "true") {
+    return NextResponse.json(
+      { error: "Next API live runner disabled; use npm run live:runner on a VM/worker" },
+      { status: 503 },
+    );
+  }
+
   const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
+  if (!secret) {
+    return NextResponse.json({ error: "CRON_SECRET is required for the live route" }, { status: 503 });
+  }
+  if (req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
@@ -42,7 +57,11 @@ export async function GET(req: Request): Promise<Response> {
   let twak: { close(): Promise<void> } | null = null;
   try {
     const cmcConn = createCmcMarketSource();
-    const twakConn = createTrustWalletWallet();
+    const twakConn = createTrustWalletWallet({
+      reserveAsset: process.env.AGENT_RESERVE_ASSET ?? "USDT",
+      tokenAddresses: parseTokenAddresses(process.env.AGENT_TOKEN_ADDRESSES),
+      ...(process.env.AGENT_WALLET_ADDRESS ? { address: process.env.AGENT_WALLET_ADDRESS } : {}),
+    });
     cmc = cmcConn.transport;
     twak = twakConn.transport;
 
@@ -54,7 +73,7 @@ export async function GET(req: Request): Promise<Response> {
       state,
       wallet: twakConn.wallet,
       market: cmcConn.source,
-      synthesizer: claudeSynthesizer(),
+      synthesizer: selectSynthesizer(),
       config: {
         strategy: DEFAULT_STRATEGY,
         sizing: {
@@ -96,4 +115,20 @@ export async function GET(req: Request): Promise<Response> {
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+function selectSynthesizer() {
+  const mode = (process.env.SYNTHESIZER_MODE ?? "deterministic").toLowerCase();
+  if (mode === "deterministic" || mode === "free") return deterministicSynthesizer;
+  if (mode === "claude") return claudeSynthesizer();
+  throw new Error("SYNTHESIZER_MODE must be deterministic or claude");
+}
+
+function parseTokenAddresses(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("AGENT_TOKEN_ADDRESSES must be a JSON object");
+  }
+  return Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k.toUpperCase(), String(v)]));
 }

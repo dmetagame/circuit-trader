@@ -66,6 +66,10 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
   const transport: TwakTransport = {
     async callTool(name, args) {
       switch (name) {
+        case "get_wallet_status":
+          return { state: "local", walletType: "local" };
+        case "switch_wallet_mode":
+          return { state: "local", mode: args.mode };
         case "get_token_price":
           return { success: true, token: "BNB", chain: "bsc", priceUsd: 600 };
         case "get_swap_quote":
@@ -104,6 +108,36 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
     expect(pf.equityUsd).toBe(100);
   });
 
+  it("switches TWAK to the local wallet when the session starts unbound", async () => {
+    const calls: string[] = [];
+    let status = "unbound";
+    const t: TwakTransport = {
+      async callTool(name, args) {
+        calls.push(name);
+        switch (name) {
+          case "get_wallet_status":
+            return { state: status };
+          case "switch_wallet_mode":
+            expect(args).toMatchObject({ mode: "local" });
+            status = "local";
+            return { state: "local" };
+          case "get_address":
+            return { chain: "bsc", address: "0x" + "2".repeat(40) };
+          case "get_balance":
+            return args.tokenAddress
+              ? { amounts: { totalInFiat: "12" } }
+              : { amounts: { totalInFiat: "3" } };
+          default:
+            throw new Error(`unexpected tool ${name}`);
+        }
+      },
+    };
+    const local = new TrustWalletWallet({ transport: t, chain: "bsc", tokenAddresses: { USDT: USDT_ADDR } });
+    const pf = await local.getPortfolio();
+    expect(pf.equityUsd).toBe(15);
+    expect(calls).toEqual(["get_wallet_status", "switch_wallet_mode", "get_wallet_status", "get_address", "get_balance", "get_balance"]);
+  });
+
   it("maps a honeypot token to max risk", async () => {
     const t: TwakTransport = {
       async callTool() {
@@ -117,6 +151,7 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
   it("enforces the slippage cap client-side even if the swap reports worse fill", async () => {
     const greedy: TwakTransport = {
       async callTool(name) {
+        if (name === "get_wallet_status") return { state: "local" };
         if (name === "get_token_price") return { priceUsd: 600 };
         return { success: true, txHash: "0x" + "cd".repeat(32), output: "0.0081 BNB", priceImpact: "5" }; // 500 bps
       },
@@ -132,6 +167,7 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
     // Expected out for $5 at $500 = 0.01 BNB; a 0.0098 fill = 200bps realized -> over a 75bps cap.
     const noImpact: TwakTransport = {
       async callTool(name) {
+        if (name === "get_wallet_status") return { state: "local" };
         if (name === "get_token_price") return { priceUsd: 500 };
         return { success: true, txHash: "0x" + "ef".repeat(32), output: "0.0098 BNB" };
       },
@@ -144,6 +180,7 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
     // A tight fill (0.00999 BNB = 10bps) clears the same cap and reports the realized slippage.
     const tight: TwakTransport = {
       async callTool(name) {
+        if (name === "get_wallet_status") return { state: "local" };
         if (name === "get_token_price") return { priceUsd: 500 };
         return { success: true, txHash: "0x" + "12".repeat(32), output: "0.00999 BNB" };
       },
