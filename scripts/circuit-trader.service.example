@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/CHANGE_ME/circuit-trader
 Environment=NODE_ENV=production
+Environment=ENV_FILE=.env.worker.local
 Environment=PATH=/home/CHANGE_ME/.nvm/versions/node/CHANGE_ME/bin:/home/CHANGE_ME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 ExecStartPre=/home/CHANGE_ME/.nvm/versions/node/CHANGE_ME/bin/node scripts/live-runner.mjs --check
 ExecStart=/home/CHANGE_ME/.nvm/versions/node/CHANGE_ME/bin/node scripts/live-runner.mjs

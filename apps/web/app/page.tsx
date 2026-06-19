@@ -5,6 +5,7 @@ import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
 import type { Snapshot, TickView, AssetView } from "@/lib/session";
+import type { LiveEnvelope } from "@/lib/live";
 import { Logo, LOGO_NODE_CLASS, LOGO_TRACE_CLASS, LOGO_SWITCH_CLASS } from "@/components/brand/Logo";
 import { AnimatedNumber } from "@/components/AnimatedNumber";
 
@@ -18,33 +19,54 @@ const fmt = fmtUsd;
 
 const NO_PREF = "(prefers-reduced-motion: no-preference)";
 
-async function call(path: string, method: "GET" | "POST"): Promise<Snapshot> {
+async function call<T>(path: string, method: "GET" | "POST"): Promise<T> {
   const res = await fetch(path, { method, cache: "no-store" });
-  return res.json();
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return body as T;
 }
 
 export default function Page() {
-  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [mode, setMode] = useState<"live" | "demo">("live");
+  const [demoSnap, setDemoSnap] = useState<Snapshot | null>(null);
+  const [live, setLive] = useState<LiveEnvelope | null>(null);
+  const [liveLoaded, setLiveLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const flash = useRef<HTMLDivElement>(null);
 
-  const refresh = useCallback(async () => setSnap(await call("/api/state", "GET")), []);
+  const refreshDemo = useCallback(async () => setDemoSnap(await call<Snapshot>("/api/state", "GET")), []);
+  const refreshLive = useCallback(async () => {
+    try {
+      setLive(await call<LiveEnvelope>("/api/live", "GET"));
+    } catch {
+      setLive(null);
+    } finally {
+      setLiveLoaded(true);
+    }
+  }, []);
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    void refreshDemo();
+    void refreshLive();
+  }, [refreshDemo, refreshLive]);
+  useEffect(() => {
+    if (mode !== "live") return;
+    const timer = window.setInterval(() => void refreshLive(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [mode, refreshLive]);
 
   const run = useCallback(async (path: string, times = 1) => {
     setBusy(true);
     try {
       let s: Snapshot | null = null;
-      for (let i = 0; i < times; i++) s = await call(path, "POST");
-      if (s) setSnap(s);
+      for (let i = 0; i < times; i++) s = await call<Snapshot>(path, "POST");
+      if (s) setDemoSnap(s);
     } finally {
       setBusy(false);
     }
   }, []);
 
+  const snap = mode === "live" ? live?.snapshot ?? null : demoSnap;
   const loaded = snap != null;
   const latest = snap?.timeline[0]?.index ?? 0;
 
@@ -155,6 +177,7 @@ export default function Page() {
   }, [playCrashBeat, run]);
 
   const tripped = snap?.killSwitch.engaged ?? false;
+  const liveStale = live ? Date.now() - Date.parse(live.updatedAt) > 30 * 60 * 1000 : false;
 
   return (
     <div className="wrap" ref={root}>
@@ -180,35 +203,40 @@ export default function Page() {
         </p>
       </div>
 
+      <div className="mode-switch" role="group" aria-label="Dashboard data source">
+        <button className={mode === "live" ? "selected" : ""} aria-pressed={mode === "live"} onClick={() => setMode("live")}>Live</button>
+        <button className={mode === "demo" ? "selected" : ""} aria-pressed={mode === "demo"} onClick={() => setMode("demo")}>Demo</button>
+      </div>
+
       {!snap ? (
-        <div className="empty">Loading…</div>
+        <div className="empty">
+          {mode === "live" && liveLoaded ? "Awaiting the first worker snapshot." : "Loading…"}
+        </div>
       ) : (
         <>
           {tripped ? (
             <div className="banner tripped">⛔ CIRCUIT BREAKER TRIPPED — {snap.killSwitch.reason ?? "kill switch engaged"}. Trading halted.</div>
+          ) : mode === "live" ? (
+            <div className={`banner ${liveStale ? "stale" : "armed"}`}>
+              {liveStale ? "STALE" : "LIVE"} — worker snapshot {new Date(live!.updatedAt).toLocaleString()}.
+            </div>
           ) : (
             <div className="banner armed">● ARMED — constitution enforced on every order.</div>
           )}
 
           <Cards snap={snap} tripped={tripped} />
 
-          <div className="controls">
-            <button className="primary" disabled={busy || tripped} onClick={() => run("/api/tick")}>
-              Run tick
-            </button>
-            <button disabled={busy || tripped} onClick={() => run("/api/tick", 3)}>
-              Run 3 ticks
-            </button>
-            <button className="danger" disabled={busy || tripped} onClick={onCrash}>
-              ⚡ Trigger crash
-            </button>
-            <button disabled={busy} onClick={() => run("/api/reset")}>
-              Reset
-            </button>
-          </div>
+          {mode === "demo" ? (
+            <div className="controls">
+              <button className="primary" disabled={busy || tripped} onClick={() => run("/api/tick")}>Run tick</button>
+              <button disabled={busy || tripped} onClick={() => run("/api/tick", 3)}>Run 3 ticks</button>
+              <button className="danger" disabled={busy || tripped} onClick={onCrash}>⚡ Trigger crash</button>
+              <button disabled={busy} onClick={() => run("/api/reset")}>Reset</button>
+            </div>
+          ) : null}
 
           <div className="section reveal">
-            <p className="eyebrow">Live decision surface</p>
+            <p className="eyebrow">{mode === "live" ? "Live decision surface" : "Deterministic demonstration"}</p>
             <h2 className="section-title">The constitution, and every verdict it produces.</h2>
           </div>
 
@@ -229,7 +257,9 @@ export default function Page() {
             <div className="panel reveal">
               <h2>Decision Timeline</h2>
               {snap.timeline.length === 0 ? (
-                <div className="empty">No ticks yet. Hit “Run tick”, then “Trigger crash” to see the circuit breaker fire.</div>
+                <div className="empty">
+                  {mode === "live" ? "No live decisions have been published yet." : "No ticks yet. Run a tick to start the demonstration."}
+                </div>
               ) : (
                 <div className="timeline">
                   {snap.timeline.map((t) => (
@@ -241,8 +271,9 @@ export default function Page() {
           </div>
 
           <div className="foot reveal">
-            Demo runs on a simulated wallet with a scripted price path — deterministic and luck-proof. Swap in the Trust Wallet Agent Kit + CoinMarketCap
-            MCP adapters for live BNB-chain settlement; the policy engine, strategy, and orchestrator are unchanged.
+            {mode === "live"
+              ? "Read-only public snapshot from the persistent worker. Wallet credentials and signing material remain on the worker host."
+              : "Demo runs on a simulated wallet with a scripted price path. The live worker uses the same policy engine and orchestrator."}
           </div>
         </>
       )}

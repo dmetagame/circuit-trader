@@ -51,7 +51,7 @@ npm run build:connectors
 cp .env.example .env.local
 ```
 
-2. Fill `.env.local` with:
+2. Create `.env.worker.local` from `.env.example` and fill it with:
 
 - `CMC_MCP_API_KEY`
 - `SYNTHESIZER_MODE=deterministic` for the free local reviewer, or `SYNTHESIZER_MODE=claude` plus `ANTHROPIC_API_KEY`
@@ -59,11 +59,16 @@ cp .env.example .env.local
 - `TWAK_WALLET_PASSWORD` or a saved keychain password via `twak wallet keychain save`
 - `AGENT_WALLET_ADDRESS`
 - `AGENT_ASSETS`, `AGENT_BASE_TRADE_USD`, and risk sizing values
+- `LIVE_DASHBOARD_URL` and `LIVE_INGEST_SECRET` when publishing public snapshots
+
+Keep worker credentials out of `.env.local`: Vercel CLI owns that file and may replace it
+when project environment variables or storage integrations are pulled.
 
 3. Create a real constitution JSON with the funded agent wallet address, then sign it:
 
 ```bash
 npm run constitution:sign -- \
+  --env-file .env.worker.local \
   --input path/to/constitution.unsigned.json \
   --output .circuit-trader/constitution.signed.json
 ```
@@ -84,6 +89,11 @@ npm run live:runner
 and token-risk lookup. The runner writes durable state to `RUNNER_STATE_PATH` and appends one
 JSON record per tick to `RUNNER_TIMELINE_PATH`. Balances are read from Trust Wallet each tick;
 persisted state is only counters, high-water mark, and kill-switch bookkeeping.
+
+When `LIVE_DASHBOARD_URL` and `LIVE_INGEST_SECRET` are set, each completed tick publishes a
+credential-free snapshot to the authenticated `/api/live` endpoint. The endpoint stores only
+the latest public snapshot in private Vercel Blob storage; browsers receive it through a
+read-only GET request.
 
 For an unattended Linux user service, adapt the units under `scripts/` and install them in
 `~/.config/systemd/user/`. The start/stop timer examples bound execution to the Track 1 week.

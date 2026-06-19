@@ -128,6 +128,13 @@ async function runOnce() {
     const summary = summarizeTick(tick);
     await appendJsonl(timelinePath, summary);
     console.log(JSON.stringify(summary));
+    try {
+      await publishLiveSnapshot(constitution, tick);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`live snapshot publish failed: ${message}`);
+      await appendJsonl(timelinePath, { kind: "publish-error", now, error: message });
+    }
   } finally {
     await cmc?.close().catch(() => {});
     await twak?.close().catch(() => {});
@@ -173,13 +180,18 @@ async function saveState(file, state) {
 }
 
 function summarizeTick(tick) {
+  const highWaterMarkUsd = Math.max(tick.state.highWaterMarkUsd, tick.portfolioAfter.equityUsd);
   return {
     kind: "tick",
     now: tick.now,
     note: tick.note,
     killSwitch: tick.killSwitchEngaged,
+    killSwitchReason: tick.state.killSwitchReason,
     equityUsd: tick.portfolioAfter.equityUsd,
     reserveUsd: tick.portfolioAfter.reserveUsd,
+    highWaterMarkUsd,
+    drawdownPct:
+      highWaterMarkUsd > 0 ? ((highWaterMarkUsd - tick.portfolioAfter.equityUsd) / highWaterMarkUsd) * 100 : 0,
     tradesToday: tick.state.tradesToday,
     results: tick.results.map((r) => ({
       asset: r.asset,
@@ -189,8 +201,134 @@ function summarizeTick(tick) {
       txHash: r.fill?.txHash ?? null,
       filledUsd: r.fill?.filledUsd ?? null,
       denial: r.decision && !r.decision.allowed ? r.decision.violations[0]?.code ?? null : null,
+      denialMessage: r.decision && !r.decision.allowed ? r.decision.violations[0]?.message ?? null : null,
+      rationale: r.verdict?.rationale ?? null,
+      audit: r.audit,
       error: r.error,
     })),
+  };
+}
+
+async function publishLiveSnapshot(constitution, tick) {
+  const baseUrl = process.env.LIVE_DASHBOARD_URL;
+  const secret = process.env.LIVE_INGEST_SECRET;
+  if (!baseUrl || !secret) return;
+
+  const { views, count } = await loadTimelineViews(timelinePath);
+  const highWaterMarkUsd = Math.max(tick.state.highWaterMarkUsd, tick.portfolioAfter.equityUsd);
+  const envelope = {
+    updatedAt: tick.now,
+    snapshot: {
+      constitution: {
+        agentId: constitution.agentId,
+        chainId: constitution.chainId,
+        walletAddress: constitution.walletAddress,
+        allowedAssets: constitution.allowedAssets,
+        reserveAsset: constitution.reserveAsset,
+        maxTradeUsd: constitution.perTrade.maxTradeUsd,
+        maxDrawdownPct: constitution.riskGates.maxDrawdownPct,
+        minSignalConfidence: constitution.riskGates.minSignalConfidence,
+        maxTokenRiskScore: constitution.riskGates.maxTokenRiskScore,
+      },
+      portfolio: tick.portfolioAfter,
+      killSwitch: { engaged: tick.state.killSwitchEngaged, reason: tick.state.killSwitchReason },
+      highWaterMarkUsd,
+      drawdownPct:
+        highWaterMarkUsd > 0 ? ((highWaterMarkUsd - tick.portfolioAfter.equityUsd) / highWaterMarkUsd) * 100 : 0,
+      tickCount: count,
+      timeline: views,
+    },
+  };
+
+  const endpoint = new URL("/api/live", baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+    body: JSON.stringify(envelope),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`dashboard returned HTTP ${response.status}`);
+}
+
+async function loadTimelineViews(file) {
+  let text;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return { views: [], count: 0 };
+    }
+    throw error;
+  }
+
+  const ticks = text
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((entry) => entry.kind === "tick");
+  const views = ticks
+    .slice(-50)
+    .reverse()
+    .map((entry, offset) => summaryToView(entry, ticks.length - offset));
+  return { views, count: ticks.length };
+}
+
+function summaryToView(entry, index) {
+  const results = Array.isArray(entry.results) ? entry.results : [];
+  const assets =
+    entry.killSwitch && results.length === 0
+      ? [
+          {
+            asset: "-",
+            status: "BREAKER",
+            headline: entry.note,
+            sizeUsd: null,
+            txHash: null,
+            reason: entry.killSwitchReason ?? entry.note,
+            rationale: null,
+            audit: [entry.note],
+          },
+        ]
+      : results.map((result) => {
+          const status = result.error
+            ? "ERROR"
+            : result.denial
+              ? "DENIED"
+              : result.signal === "hold"
+                ? "HOLD"
+                : result.allowed
+                  ? result.clamped
+                    ? "CLAMPED"
+                    : "EXECUTED"
+                  : "HOLD";
+          const headline = result.error
+            ? result.error
+            : result.denial
+              ? `${result.denial}: ${result.denialMessage ?? "denied"}`
+              : result.signal === "hold"
+                ? "Strategy held"
+                : `${result.signal} ${result.filledUsd ?? 0} USD ${result.asset}`;
+          return {
+            asset: result.asset,
+            status,
+            headline,
+            sizeUsd: result.filledUsd,
+            txHash: result.txHash,
+            reason: result.error ?? result.denialMessage ?? null,
+            rationale: result.rationale ?? null,
+            audit: Array.isArray(result.audit) ? result.audit : [],
+          };
+        });
+
+  return {
+    index,
+    now: entry.now,
+    note: entry.note,
+    killSwitch: Boolean(entry.killSwitch),
+    equityUsd: Number(entry.equityUsd ?? 0),
+    reserveUsd: Number(entry.reserveUsd ?? 0),
+    drawdownPct: Number(entry.drawdownPct ?? 0),
+    assets,
   };
 }
 

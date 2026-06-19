@@ -99,6 +99,7 @@ html, body {
 }
 .banner.armed { background: var(--accent-dim); border: 1px solid rgba(198, 248, 6, 0.4); color: var(--accent); }
 .banner.tripped { background: rgba(255, 92, 92, 0.12); border: 1px solid rgba(255, 92, 92, 0.5); color: var(--deny); }
+.banner.stale { background: rgba(255, 193, 92, 0.1); border: 1px solid rgba(255, 193, 92, 0.45); color: var(--clamp); }
 
 /* ── Stat cards ────────────────────────────────────────────────────────────── */
 .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
@@ -116,6 +117,12 @@ html, body {
 .bad { color: var(--deny); }
 
 /* ── Controls ──────────────────────────────────────────────────────────────── */
+.mode-switch {
+  display: inline-grid; grid-template-columns: repeat(2, minmax(72px, 1fr)); padding: 3px;
+  margin-bottom: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+}
+.mode-switch button { min-height: 34px; padding: 7px 12px; border: 0; border-radius: 5px; background: transparent; }
+.mode-switch button.selected { background: var(--accent); color: #0b0e0d; font-weight: 600; }
 .controls { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 28px; }
 button {
   font-family: var(--font-mono); font-size: 13px; font-weight: 500; cursor: pointer;
