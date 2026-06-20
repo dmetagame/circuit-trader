@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <rect width="1600" height="900" fill="#0b0e0d"/>
+  <rect x="0" y="0" width="1600" height="900" fill="url(#glow)"/>
+  <defs>
+    <radialGradient id="glow" cx="18%" cy="6%" r="90%">
+      <stop offset="0%" stop-color="#c6f806" stop-opacity="0.07"/>
+      <stop offset="55%" stop-color="#0b0e0d" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- header -->
+  
+<g transform="translate(64,44) scale(1.4375)">
+  <path d="M26.19 11.88 A 11 11 0 1 0 26.19 20.12" fill="none" stroke="#c6f806" stroke-width="2.6" stroke-linecap="round"/>
+  <line x1="26.19" y1="20.12" x2="30.5" y2="9.2" stroke="#c6f806" stroke-width="2.6" stroke-linecap="round"/>
+  <circle cx="26.19" cy="11.88" r="2.4" fill="#c6f806"/>
+</g>
+  <text x="128" y="84" font-family="'DejaVu Sans','Inter',sans-serif" font-size="34" font-weight="700" letter-spacing="0.5" fill="#ecf1f0">CIRCUIT TRADER</text>
+  <rect x="1250" y="50" width="286" height="40" rx="20" fill="none" stroke="#c6f806" stroke-opacity="0.5"/>
+  <text x="1393" y="76" text-anchor="middle" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="16" letter-spacing="3" fill="#c6f806">SURVIVAL IS THE EDGE</text>
+
+  <text x="64" y="150" font-family="'DejaVu Sans','Inter',sans-serif" font-size="25" fill="#8d9a97">An autonomous BNB-chain trading agent that <tspan fill="#ecf1f0" font-weight="600">cannot trade unless its signed constitution allows it.</tspan></text>
+  <text x="64" y="184" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="15" letter-spacing="1" fill="#5d6a67">THE LIVE DECISION PIPELINE</text>
+
+  <!-- pipeline -->
+  
+  <rect x="64" y="232" width="450" height="348" rx="16" fill="#121716" stroke="#243029"/>
+  <rect x="64" y="232" width="6" height="348" rx="3" fill="#c6f806"/>
+  <text x="92" y="276" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="15" letter-spacing="2" fill="#5d6a67">01 · DATA</text>
+  <text x="92" y="332" font-family="'DejaVu Sans','Inter',sans-serif" font-size="34" font-weight="700" fill="#ecf1f0">CMC Agent Hub</text>
+  <text x="92" y="372" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="16" letter-spacing="3" fill="#c6f806">THE EYES</text>
+  <line x1="92" y1="394" x2="486" y2="394" stroke="#243029"/>
+  <text x="92" y="428" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">Live price + indicator signals</text><text x="92" y="458" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">pulled over MCP each tick.</text><text x="92" y="488" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97"></text><text x="92" y="518" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">› trend · momentum · volume</text><text x="92" y="548" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">› token risk lookups</text>
+  <path d="M534.5 392 L552.5 406 L534.5 420" fill="none" stroke="#c6f806" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <rect x="573" y="232" width="450" height="348" rx="16" fill="#121716" stroke="#243029"/>
+  <rect x="573" y="232" width="6" height="348" rx="3" fill="#9b8bff"/>
+  <text x="601" y="276" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="15" letter-spacing="2" fill="#5d6a67">02 · GOVERNANCE</text>
+  <text x="601" y="332" font-family="'DejaVu Sans','Inter',sans-serif" font-size="34" font-weight="700" fill="#ecf1f0">The Constitution</text>
+  <text x="601" y="372" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="16" letter-spacing="3" fill="#9b8bff">THE BRAIN</text>
+  <line x1="601" y1="394" x2="995" y2="394" stroke="#243029"/>
+  <text x="601" y="428" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">A signed risk rulebook the agent</text><text x="601" y="458" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">enforces on every single order:</text>
+  <g font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="16" font-weight="700">
+    <rect x="601" y="476" width="92" height="34" rx="6" fill="#2fd08a" fill-opacity="0.16" stroke="#2fd08a" stroke-opacity="0.5"/>
+    <text x="647" y="498" text-anchor="middle" fill="#2fd08a">ALLOW</text>
+    <rect x="705" y="476" width="92" height="34" rx="6" fill="#f5b301" fill-opacity="0.16" stroke="#f5b301" stroke-opacity="0.5"/>
+    <text x="751" y="498" text-anchor="middle" fill="#f5b301">CLAMP</text>
+    <rect x="809" y="476" width="92" height="34" rx="6" fill="#ff5c5c" fill-opacity="0.16" stroke="#ff5c5c" stroke-opacity="0.5"/>
+    <text x="855" y="498" text-anchor="middle" fill="#ff5c5c">DENY</text>
+  </g>
+  <text x="601" y="550" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="16" fill="#8d9a97">No signal → no trade.</text>
+  <path d="M1043.5 392 L1061.5 406 L1043.5 420" fill="none" stroke="#c6f806" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <rect x="1082" y="232" width="450" height="348" rx="16" fill="#121716" stroke="#243029"/>
+  <rect x="1082" y="232" width="6" height="348" rx="3" fill="#2fd08a"/>
+  <text x="1110" y="276" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="15" letter-spacing="2" fill="#5d6a67">03 · EXECUTION</text>
+  <text x="1110" y="332" font-family="'DejaVu Sans','Inter',sans-serif" font-size="34" font-weight="700" fill="#ecf1f0">BNB Chain</text>
+  <text x="1110" y="372" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="16" letter-spacing="3" fill="#2fd08a">THE HANDS</text>
+  <line x1="1110" y1="394" x2="1504" y2="394" stroke="#243029"/>
+  <text x="1110" y="428" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">Approved orders settle on-chain</text><text x="1110" y="458" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">via Trust Wallet Agent Kit.</text><text x="1110" y="488" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97"></text><text x="1110" y="518" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">› real swaps, real tx hashes</text><text x="1110" y="548" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="17" fill="#8d9a97">› reserve always protected</text>
+
+  <!-- verdict strip (mimics the live dashboard timeline row) -->
+  <rect x="64" y="624" width="1472" height="86" rx="14" fill="#0f1413" stroke="#243029"/>
+  <rect x="86" y="650" width="118" height="34" rx="6" fill="#2fd08a" fill-opacity="0.18" stroke="#2fd08a" stroke-opacity="0.6"/>
+  <text x="145" y="673" text-anchor="middle" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="16" font-weight="700" fill="#2fd08a">EXECUTED</text>
+  <text x="232" y="673" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="19" fill="#ecf1f0">BNB</text>
+  <text x="304" y="673" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="19" fill="#8d9a97">buy 0.20 USD</text>
+  <text x="534" y="673" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="19" fill="#5d6a67">tx 0x4c38d9…c727c5</text>
+  <text x="1514" y="673" text-anchor="end" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="16" fill="#c6f806">● constitution enforced</text>
+
+  <!-- footer -->
+  <text x="64" y="856" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="22" font-weight="700" fill="#c6f806">#CMCAgentHub<tspan fill="#8d9a97" font-weight="400">  ·  </tspan><tspan fill="#ecf1f0">@CoinMarketCap</tspan><tspan fill="#8d9a97" font-weight="400">  ·  </tspan><tspan fill="#ecf1f0">#BNBHack</tspan></text>
+  <text x="1536" y="856" text-anchor="end" font-family="'DejaVu Sans Mono','JetBrains Mono',monospace" font-size="20" fill="#8d9a97">circuit-trader.vercel.app</text>
+</svg>
