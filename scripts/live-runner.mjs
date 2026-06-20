@@ -1,26 +1,33 @@
 #!/usr/bin/env node
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   DEFAULT_STRATEGY,
   claudeSynthesizer,
+  constitutionDigest,
   deterministicSynthesizer,
   initState,
   parseConstitution,
+  parseRuntimeState,
   runTick,
   verifyConstitution,
 } from "circuit-trader-policy";
 import { createCmcMarketSource, createTrustWalletWallet } from "@circuit-trader/connectors";
+import { acquireRunnerLock, appendJsonlDurable, ExecutionJournal, writeJsonAtomic } from "./durable-execution.mjs";
 
 const args = parseArgs(process.argv.slice(2));
-await loadEnvFile(args.envFile ?? process.env.ENV_FILE ?? ".env.local");
+await loadEnvFile(args.envFile ?? process.env.ENV_FILE ?? ".env.worker.local");
 
 const statePath = resolve(process.env.RUNNER_STATE_PATH ?? ".circuit-trader/state.json");
 const timelinePath = resolve(process.env.RUNNER_TIMELINE_PATH ?? ".circuit-trader/timeline.jsonl");
+const journalPath = resolve(process.env.RUNNER_JOURNAL_PATH ?? ".circuit-trader/execution-journal.json");
+const lockPath = resolve(process.env.RUNNER_LOCK_PATH ?? ".circuit-trader/runner.lock");
 const intervalMs = Number(args.intervalMs ?? process.env.RUNNER_INTERVAL_MS ?? 15 * 60 * 1000);
 const reserveAsset = process.env.AGENT_RESERVE_ASSET ?? "USDT";
-const assets = csv(process.env.AGENT_ASSETS ?? "BNB,TWT,CAKE").filter((a) => a !== reserveAsset);
+const assets = csv(process.env.AGENT_ASSETS ?? "BNB,TWT").filter((a) => a !== reserveAsset);
 const tokenAddresses = parseJsonMap(process.env.AGENT_TOKEN_ADDRESSES);
+const baseTradeUsd = finiteNumberEnv("AGENT_BASE_TRADE_USD", 4, { minExclusive: 0 });
+const minStrengthToTrade = finiteNumberEnv("AGENT_MIN_STRENGTH", 0.3, { min: 0, max: 1 });
 const requireSigned = boolEnv("REQUIRE_SIGNED_CONSTITUTION", true);
 const requireSignerIsWallet = boolEnv("REQUIRE_CONSTITUTION_SIGNER_IS_WALLET", true);
 const synthesizer = selectSynthesizer();
@@ -30,24 +37,32 @@ if (!Number.isFinite(intervalMs) || intervalMs <= 0) throw new Error("RUNNER_INT
 
 await ensureDir(statePath);
 await ensureDir(timelinePath);
+await ensureDir(journalPath);
 
 if (args.check) {
   await runCheck();
-} else if (args.once) {
-  await runOnce();
 } else {
-  console.log(`Circuit Trader live runner started. intervalMs=${intervalMs} assets=${assets.join(",")}`);
-  for (;;) {
-    const started = Date.now();
-    try {
+  const releaseLock = await acquireRunnerLock(lockPath);
+  try {
+    if (args.once) {
       await runOnce();
-    } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      console.error(`[${new Date().toISOString()}] tick failed: ${error}`);
-      await appendJsonl(timelinePath, { kind: "runner-error", now: new Date().toISOString(), error });
+    } else {
+      console.log(`Circuit Trader live runner started. intervalMs=${intervalMs} assets=${assets.join(",")}`);
+      for (;;) {
+        const started = Date.now();
+        try {
+          await runOnce();
+        } catch (e) {
+          const error = e instanceof Error ? e.message : String(e);
+          console.error(`[${new Date().toISOString()}] tick failed: ${error}`);
+          await appendJsonl(timelinePath, { kind: "runner-error", now: new Date().toISOString(), error });
+        }
+        const elapsed = Date.now() - started;
+        await sleep(Math.max(1000, intervalMs - elapsed));
+      }
     }
-    const elapsed = Date.now() - started;
-    await sleep(Math.max(1000, intervalMs - elapsed));
+  } finally {
+    await releaseLock();
   }
 }
 
@@ -59,6 +74,7 @@ async function runCheck() {
     const cmcConn = createCmcMarketSource();
     const twakConn = createTrustWalletWallet({
       reserveAsset,
+      chainId: constitution.chainId,
       tokenAddresses,
       ...(process.env.AGENT_WALLET_ADDRESS ? { address: process.env.AGENT_WALLET_ADDRESS } : {}),
     });
@@ -68,20 +84,32 @@ async function runCheck() {
     // TWAK's stdio server handles wallet calls serially; keep preflight ordering explicit.
     console.error("preflight: checking wallet portfolio");
     const portfolio = await twakConn.wallet.getPortfolio();
-    console.error("preflight: checking token risk");
-    const tokenRiskScore = await twakConn.wallet.getTokenRiskScore(assets[0]);
-    console.error("preflight: checking CMC market data");
-    const market = await cmcConn.source.getMarketData(assets[0]);
+    if (constitution.nativeAsset && constitution.portfolio.minNativeGasReserveUsd != null) {
+      const nativeBalanceUsd = portfolio.positions[constitution.nativeAsset] ?? 0;
+      if (nativeBalanceUsd < constitution.portfolio.minNativeGasReserveUsd) {
+        throw new Error(
+          `${constitution.nativeAsset} gas reserve ${nativeBalanceUsd} USD is below signed minimum ${constitution.portfolio.minNativeGasReserveUsd} USD`,
+        );
+      }
+    }
+    const checks = [];
+    for (const asset of assets) {
+      console.error(`preflight: checking ${asset} token risk`);
+      const tokenRiskScore = await twakConn.wallet.getTokenRiskScore(asset);
+      console.error(`preflight: checking ${asset} CMC market data`);
+      const market = await cmcConn.source.getMarketData(asset);
+      console.error(`preflight: checking ${asset} executable quote`);
+      const quote = await twakConn.wallet.getQuote({ asset, side: "buy", sizeUsd: constitution.perTrade.minTradeUsd });
+      checks.push({ asset, marketPriceUsd: market.priceUsd, tokenRiskScore, expectedSlippageBps: quote.expectedSlippageBps });
+    }
     console.log(
       JSON.stringify({
         ok: true,
         agentId: constitution.agentId,
         walletAddress: constitution.walletAddress,
-        assetChecked: assets[0],
         equityUsd: portfolio.equityUsd,
         reserveUsd: portfolio.reserveUsd,
-        marketPriceUsd: market.priceUsd,
-        tokenRiskScore,
+        checks,
       }),
     );
   } finally {
@@ -93,7 +121,13 @@ async function runCheck() {
 async function runOnce() {
   const now = new Date().toISOString();
   const constitution = await loadConstitution();
-  const state = (await loadState(statePath)) ?? initState(0, now);
+  let state = (await loadState(statePath)) ?? initState(0, now);
+  const journal = new ExecutionJournal(journalPath, (nextState) => saveState(statePath, nextState));
+  const recovery = await journal.recover(state);
+  state = recovery.state;
+  if (recovery.outcome !== "none") {
+    await appendJsonl(timelinePath, { kind: "execution-recovery", now, outcome: recovery.outcome, executionId: recovery.executionId });
+  }
 
   let cmc = null;
   let twak = null;
@@ -101,6 +135,7 @@ async function runOnce() {
     const cmcConn = createCmcMarketSource();
     const twakConn = createTrustWalletWallet({
       reserveAsset,
+      chainId: constitution.chainId,
       tokenAddresses,
       ...(process.env.AGENT_WALLET_ADDRESS ? { address: process.env.AGENT_WALLET_ADDRESS } : {}),
     });
@@ -113,11 +148,12 @@ async function runOnce() {
       wallet: twakConn.wallet,
       market: cmcConn.source,
       synthesizer,
+      executionObserver: journal,
       config: {
         strategy: DEFAULT_STRATEGY,
         sizing: {
-          baseTradeUsd: Number(process.env.AGENT_BASE_TRADE_USD ?? 4),
-          minStrengthToTrade: Number(process.env.AGENT_MIN_STRENGTH ?? 0.3),
+          baseTradeUsd,
+          minStrengthToTrade,
         },
         assets,
       },
@@ -135,6 +171,17 @@ async function runOnce() {
       console.error(`live snapshot publish failed: ${message}`);
       await appendJsonl(timelinePath, { kind: "publish-error", now, error: message });
     }
+  } catch (error) {
+    const emergencyRecovery = await journal.recover(state);
+    if (emergencyRecovery.outcome !== "none") {
+      await appendJsonl(timelinePath, {
+        kind: "execution-recovery",
+        now: new Date().toISOString(),
+        outcome: emergencyRecovery.outcome,
+        executionId: emergencyRecovery.executionId,
+      });
+    }
+    throw error;
   } finally {
     await cmc?.close().catch(() => {});
     await twak?.close().catch(() => {});
@@ -157,6 +204,16 @@ async function loadConstitution() {
   if (!raw) throw new Error("set CONSTITUTION_JSON or CONSTITUTION_PATH before running live");
 
   const constitution = parseConstitution(raw);
+  if (constitution.reserveAsset !== reserveAsset) {
+    throw new Error(`constitution reserve ${constitution.reserveAsset} does not match AGENT_RESERVE_ASSET ${reserveAsset}`);
+  }
+  const configuredWallet = process.env.AGENT_WALLET_ADDRESS;
+  if (!configuredWallet) throw new Error("AGENT_WALLET_ADDRESS is required");
+  if (configuredWallet.toLowerCase() !== constitution.walletAddress.toLowerCase()) {
+    throw new Error("AGENT_WALLET_ADDRESS does not match the constitution wallet");
+  }
+  const disallowed = assets.filter((asset) => !constitution.allowedAssets.includes(asset));
+  if (disallowed.length) throw new Error(`AGENT_ASSETS contains assets outside the constitution: ${disallowed.join(",")}`);
   if (requireSigned) {
     const verification = await verifyConstitution(constitution, { requireSignerIsWallet });
     if (!verification.valid) throw new Error(`constitution signature invalid: ${verification.reason ?? "unknown"}`);
@@ -166,7 +223,7 @@ async function loadConstitution() {
 
 async function loadState(file) {
   try {
-    return JSON.parse(await readFile(file, "utf8"));
+    return parseRuntimeState(JSON.parse(await readFile(file, "utf8")));
   } catch (e) {
     if (e && typeof e === "object" && "code" in e && e.code === "ENOENT") return null;
     throw e;
@@ -174,9 +231,7 @@ async function loadState(file) {
 }
 
 async function saveState(file, state) {
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  await rename(tmp, file);
+  await writeJsonAtomic(file, state);
 }
 
 function summarizeTick(tick) {
@@ -225,14 +280,24 @@ async function publishLiveSnapshot(constitution, tick) {
         walletAddress: constitution.walletAddress,
         allowedAssets: constitution.allowedAssets,
         reserveAsset: constitution.reserveAsset,
+        nativeAsset: constitution.nativeAsset,
+        minNativeGasReserveUsd: constitution.portfolio.minNativeGasReserveUsd,
         maxTradeUsd: constitution.perTrade.maxTradeUsd,
         maxDrawdownPct: constitution.riskGates.maxDrawdownPct,
         minSignalConfidence: constitution.riskGates.minSignalConfidence,
         maxTokenRiskScore: constitution.riskGates.maxTokenRiskScore,
+        digest: constitutionDigest(constitution),
+        signer: constitution.signature?.signer ?? null,
       },
       portfolio: tick.portfolioAfter,
       killSwitch: { engaged: tick.state.killSwitchEngaged, reason: tick.state.killSwitchReason },
       highWaterMarkUsd,
+      initialEquityUsd: tick.state.initialEquityUsd,
+      pnlUsd: tick.portfolioAfter.equityUsd - tick.state.initialEquityUsd,
+      returnPct:
+        tick.state.initialEquityUsd > 0
+          ? ((tick.portfolioAfter.equityUsd - tick.state.initialEquityUsd) / tick.state.initialEquityUsd) * 100
+          : 0,
       drawdownPct:
         highWaterMarkUsd > 0 ? ((highWaterMarkUsd - tick.portfolioAfter.equityUsd) / highWaterMarkUsd) * 100 : 0,
       tickCount: count,
@@ -261,11 +326,15 @@ async function loadTimelineViews(file) {
     throw error;
   }
 
-  const ticks = text
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
-    .filter((entry) => entry.kind === "tick");
+  const entries = [];
+  for (const line of text.split(/\r?\n/).filter(Boolean)) {
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      // Preserve dashboard availability if a process died during an older append.
+    }
+  }
+  const ticks = entries.filter((entry) => entry.kind === "tick");
   const views = ticks
     .slice(-50)
     .reverse()
@@ -333,7 +402,7 @@ function summaryToView(entry, index) {
 }
 
 async function appendJsonl(file, value) {
-  await appendFile(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  await appendJsonlDurable(file, value);
 }
 
 async function ensureDir(file) {
@@ -360,6 +429,15 @@ function boolEnv(name, fallback) {
   const raw = process.env[name];
   if (raw == null || raw === "") return fallback;
   return ["1", "true", "yes", "on"].includes(raw.toLowerCase());
+}
+
+function finiteNumberEnv(name, fallback, bounds = {}) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(value)) throw new Error(`${name} must be a finite number`);
+  if (bounds.min != null && value < bounds.min) throw new Error(`${name} must be >= ${bounds.min}`);
+  if (bounds.minExclusive != null && value <= bounds.minExclusive) throw new Error(`${name} must be > ${bounds.minExclusive}`);
+  if (bounds.max != null && value > bounds.max) throw new Error(`${name} must be <= ${bounds.max}`);
+  return value;
 }
 
 async function loadEnvFile(file) {

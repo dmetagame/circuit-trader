@@ -18,19 +18,21 @@ export {
   markHighWater,
   recordExecution,
   engageKillSwitch,
+  parseRuntimeState,
   totalNonReserveExposureUsd,
   type RuntimeState,
 } from "./state.js";
 
 export { evaluate, type EvaluateArgs } from "./policy-engine.js";
 
-export type {
-  TradeProposal,
-  TradeSide,
-  PolicyDecision,
-  Violation,
-  ViolationCode,
-  Adjustment,
+export {
+  TradeProposalSchema,
+  type TradeProposal,
+  type TradeSide,
+  type PolicyDecision,
+  type Violation,
+  type ViolationCode,
+  type Adjustment,
 } from "./types.js";
 
 // --- Strategy module ---
@@ -69,6 +71,7 @@ export {
 
 // --- Execution module ---
 export {
+  ExecutionRejectedError,
   SlippageExceededError,
   type Wallet,
   type QuoteRequest,
@@ -104,4 +107,7 @@ export {
   type TickResult,
   type AssetTickResult,
   type OrchestratorConfig,
+  type ExecutionIntent,
+  type ExecutionObserver,
+  ExecutionPersistenceError,
 } from "./orchestrator/orchestrator.js";

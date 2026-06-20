@@ -19,7 +19,7 @@ export interface StrategyConfig {
 
 export const DEFAULT_STRATEGY: StrategyConfig = {
   smaFastPeriod: 7,
-  smaSlowPeriod: 25,
+  smaSlowPeriod: 30,
   rsiPeriod: 14,
   rocPeriod: 7,
   zscorePeriod: 20,

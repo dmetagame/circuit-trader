@@ -102,7 +102,7 @@ html, body {
 .banner.stale { background: rgba(255, 193, 92, 0.1); border: 1px solid rgba(255, 193, 92, 0.45); color: var(--clamp); }
 
 /* ── Stat cards ────────────────────────────────────────────────────────────── */
-.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px; }
 .card {
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 16px;
   transition: border-color 0.2s, transform 0.2s;

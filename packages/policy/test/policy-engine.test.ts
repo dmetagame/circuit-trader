@@ -118,6 +118,17 @@ describe("policy engine — denials (the demo 'denial' beat)", () => {
     expect(d.allowed).toBe(false);
     expect(d.violations.map((v) => v.code)).toContain("UNCLAMPABLE");
   });
+
+  it("DENIES non-finite proposal fields instead of failing open", () => {
+    const d = evaluate({
+      constitution: constitution(),
+      state: baseState(),
+      proposal: proposal({ sizeUsd: Number.NaN, signalConfidence: Number.NaN }),
+      now: NOW,
+    });
+    expect(d.allowed).toBe(false);
+    expect(d.violations.map((v) => v.code)).toEqual(["INVALID_PROPOSAL"]);
+  });
 });
 
 describe("policy engine — clamping", () => {
@@ -142,9 +153,31 @@ describe("policy engine — clamping", () => {
     expect(d.effectiveProposal?.sizeUsd).toBe(10);
     expect(d.adjustments[0]?.reason).toBe("CONCENTRATION_EXCEEDED");
   });
+
+  it("rounds a fractional binding cap down and never above the signed limit", () => {
+    const c = constitution({ perTrade: { minTradeUsd: 0.1, maxTradeUsd: 1, maxSlippageBps: 75 } } as Partial<Constitution>);
+    const state = baseState({ equityUsd: 0.2625, reserveUsd: 0.2625, highWaterMarkUsd: 0.2625, startOfDayEquityUsd: 0.2625 });
+    const d = evaluate({ constitution: c, state, proposal: proposal({ sizeUsd: 0.2 }), now: NOW });
+    expect(d.allowed).toBe(true);
+    expect(d.effectiveProposal?.sizeUsd).toBe(0.1);
+    expect(d.effectiveProposal?.sizeUsd).toBeLessThanOrEqual(0.105);
+  });
+
+  it("preserves the signed native gas reserve on sells", () => {
+    const c = constitution({
+      nativeAsset: "BNB",
+      portfolio: { ...RAW.portfolio, minNativeGasReserveUsd: 0.5 },
+      perTrade: { minTradeUsd: 0.1, maxTradeUsd: 1, maxSlippageBps: 75 },
+    } as Partial<Constitution>);
+    const state = baseState({ equityUsd: 1, reserveUsd: 0, positions: { BNB: 1 }, highWaterMarkUsd: 1, startOfDayEquityUsd: 1 });
+    const d = evaluate({ constitution: c, state, proposal: proposal({ side: "sell", sizeUsd: 0.8 }), now: NOW });
+    expect(d.allowed).toBe(true);
+    expect(d.effectiveProposal?.sizeUsd).toBe(0.5);
+    expect(d.adjustments[0]?.reason).toBe("NATIVE_GAS_RESERVE");
+  });
 });
 
-describe("policy engine — terminal drawdown gate (Track 1 DQ mirror)", () => {
+describe("policy engine — terminal drawdown gate", () => {
   it("DENIES and engages the kill switch when drawdown breaches the cap", () => {
     const state = baseState({ equityUsd: 70, highWaterMarkUsd: 100, reserveUsd: 70 });
     const d = evaluate({ constitution: constitution(), state, proposal: proposal(), now: NOW });

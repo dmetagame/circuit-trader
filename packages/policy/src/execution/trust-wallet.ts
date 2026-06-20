@@ -1,6 +1,6 @@
 import type { TradeSide } from "../types.js";
 import {
-  SlippageExceededError,
+  ExecutionRejectedError,
   type Fill,
   type Portfolio,
   type QuoteRequest,
@@ -116,7 +116,8 @@ export class TrustWalletWallet implements Wallet {
   private readonly nativeSymbol: string;
   private readonly tokenAddresses: Record<string, string>;
   private readonly tools: TwakToolNames;
-  private address: string | null;
+  private readonly expectedAddress: string | null;
+  private resolvedAddress: string | null = null;
   private walletModeReady = false;
 
   constructor(cfg: TrustWalletWalletConfig) {
@@ -127,17 +128,20 @@ export class TrustWalletWallet implements Wallet {
     this.nativeSymbol = cfg.nativeSymbol ?? "BNB";
     this.tokenAddresses = cfg.tokenAddresses ?? {};
     this.tools = { ...DEFAULT_TOOL_NAMES, ...cfg.toolNames };
-    this.address = cfg.address ?? null;
+    this.expectedAddress = cfg.address ?? null;
   }
 
   /** Resolve (and cache) the bound wallet address for this chain. */
   private async boundAddress(): Promise<string> {
     await this.ensureWalletMode();
-    if (this.address) return this.address;
+    if (this.resolvedAddress) return this.resolvedAddress;
     const r = rec(await this.t.callTool(this.tools.address, { chain: this.chain }));
     const a = String(r.address ?? "");
     if (!a) throw new Error(`could not resolve bound wallet address on ${this.chain}`);
-    this.address = a;
+    if (this.expectedAddress && a.toLowerCase() !== this.expectedAddress.toLowerCase()) {
+      throw new Error(`bound TWAK wallet ${a} does not match configured wallet ${this.expectedAddress}`);
+    }
+    this.resolvedAddress = a;
     return a;
   }
 
@@ -175,7 +179,9 @@ export class TrustWalletWallet implements Wallet {
     }
     const r = rec(await this.t.callTool(this.tools.balance, args));
     const amounts = rec(r.amounts);
-    return num(amounts.totalInFiat ?? amounts.availableInFiat, 0);
+    const value = num(amounts.totalInFiat ?? amounts.availableInFiat, NaN);
+    if (!Number.isFinite(value) || value < 0) throw new Error(`invalid balance response for ${asset} on ${this.chain}`);
+    return value;
   }
 
   /** USD price for a symbol via get_token_price → { priceUsd }. */
@@ -212,7 +218,9 @@ export class TrustWalletWallet implements Wallet {
       }),
     );
     // priceImpact is a percent string ("0", "0.35"); convert to bps.
-    const expectedSlippageBps = Math.round(num(r.priceImpact, 0) * 100);
+    const priceImpact = num(r.priceImpact, NaN);
+    if (!Number.isFinite(priceImpact) || priceImpact < 0) throw new Error(`quote missing valid price impact for ${req.asset}`);
+    const expectedSlippageBps = Math.round(priceImpact * 100);
     return {
       expectedSlippageBps,
       quoteId: typeof r.quoteId === "string" ? r.quoteId : "",
@@ -221,8 +229,13 @@ export class TrustWalletWallet implements Wallet {
   }
 
   async executeSwap(order: SwapOrder, now: string): Promise<Fill> {
-    await this.ensureWalletMode();
-    const price = await this.priceUsd(order.asset);
+    let price: number;
+    try {
+      await this.boundAddress();
+      price = await this.priceUsd(order.asset);
+    } catch (error) {
+      throw new ExecutionRejectedError("swap preparation failed before submission", { cause: error });
+    }
     const { fromToken, toToken, amount } = this.legs(order.side, order.asset, order.sizeUsd, price);
 
     const r = rec(
@@ -236,7 +249,7 @@ export class TrustWalletWallet implements Wallet {
       }),
     );
 
-    if (r.success === false) throw new Error(`swap failed: ${String(r.error ?? r.message ?? "unknown")}`);
+    if (r.success === false) throw new ExecutionRejectedError(`swap rejected: ${String(r.error ?? r.message ?? "unknown")}`);
 
     // Output amount is in the TO token; USD notional = output * (reserve≈$1 on buy→USD via price on sell).
     const outAmount = leadingNum(r.output, NaN);
@@ -253,8 +266,6 @@ export class TrustWalletWallet implements Wallet {
           ? Math.max(0, Math.round((1 - outAmount / expectedOut) * 10_000))
           : order.maxSlippageBps;
     }
-    if (slippageBps > order.maxSlippageBps) throw new SlippageExceededError(slippageBps, order.maxSlippageBps);
-
     const filledUsd =
       order.side === "buy"
         ? order.sizeUsd // spent ~sizeUsd of the reserve stablecoin

@@ -50,16 +50,41 @@ export function createTrustWalletWallet(opts: TrustWalletConnectorOptions = {}):
   const accessId = opts.accessId ?? process.env.TWAK_ACCESS_ID;
   const hmacSecret = opts.hmacSecret ?? process.env.TWAK_HMAC_SECRET;
   const walletPassword = opts.walletPassword ?? process.env.TWAK_WALLET_PASSWORD;
+  if (opts.extraServeArgs?.includes("--password")) {
+    throw new Error("pass the wallet password via TWAK_WALLET_PASSWORD, not process arguments");
+  }
 
   const env: Record<string, string> = {
-    ...stringEnv(process.env),
+    ...stringEnv({
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      USER: process.env.USER,
+      LOGNAME: process.env.LOGNAME,
+      SHELL: process.env.SHELL,
+      PWD: process.env.PWD,
+      TMPDIR: process.env.TMPDIR,
+      XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+      XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+      XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+      XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+      XDG_DATA_DIRS: process.env.XDG_DATA_DIRS,
+      XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+      DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
+      LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH,
+      NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
+      LANG: process.env.LANG,
+      LC_ALL: process.env.LC_ALL,
+      LC_CTYPE: process.env.LC_CTYPE,
+      TERM: process.env.TERM,
+    }),
     ...(accessId ? { TWAK_ACCESS_ID: accessId } : {}),
     ...(hmacSecret ? { TWAK_HMAC_SECRET: hmacSecret } : {}),
+    ...(walletPassword ? { TWAK_WALLET_PASSWORD: walletPassword } : {}),
   };
 
   const transport = new McpStdioTransport({
     command,
-    args: ["--no-analytics", "serve", ...(walletPassword ? ["--password", walletPassword] : []), ...(opts.extraServeArgs ?? [])],
+    args: ["--no-analytics", "serve", ...(opts.extraServeArgs ?? [])],
     env,
     clientName: "circuit-trader-twak",
   });
@@ -69,6 +94,14 @@ export function createTrustWalletWallet(opts: TrustWalletConnectorOptions = {}):
     ...(chain === "bsc" ? BSC_TOKEN_ADDRESSES : {}),
     ...(opts.tokenAddresses ?? {}),
   };
+  if (chain === "bsc") {
+    for (const [symbol, address] of Object.entries(opts.tokenAddresses ?? {})) {
+      const canonical = BSC_TOKEN_ADDRESSES[symbol];
+      if (canonical && canonical.toLowerCase() !== address.toLowerCase()) {
+        throw new Error(`refusing to override canonical BSC address for ${symbol}`);
+      }
+    }
+  }
 
   const wallet = new TrustWalletWallet({
     transport,

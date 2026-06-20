@@ -61,6 +61,7 @@ describe("runTick", () => {
   it("runs the full loop and executes a cleared buy", async () => {
     const wallet = new SimulatedWallet({ reserveUsd: 100, prices: { BNB: 600 }, riskScores: { BNB: 15 }, slippageBps: 20 });
     const market = new FixtureMarketSource({ BNB: { asset: "BNB", closes: noisyUp(40), narrativeScore: 0.5 } });
+    const checkpoints: string[] = [];
 
     const tick = await runTick({
       constitution: constitution(),
@@ -70,6 +71,16 @@ describe("runTick", () => {
       synthesizer: confirm,
       config: config(),
       now: NOW,
+      executionObserver: {
+        async beforeExecution(intent) {
+          checkpoints.push(`before:${intent.executionId}`);
+        },
+        async afterExecution(intent, _fill, state) {
+          expect(state.recordedExecutionIds).toContain(intent.executionId);
+          checkpoints.push(`after:${intent.executionId}`);
+        },
+        async afterRejection() {},
+      },
     });
 
     const bnb = tick.results.find((r) => r.asset === "BNB")!;
@@ -79,6 +90,33 @@ describe("runTick", () => {
     expect(tick.state.tradesToday).toBe(1);
     expect(tick.portfolioAfter.positions.BNB).toBeGreaterThan(0);
     expect(tick.state.equityUsd).toBeCloseTo(tick.portfolioAfter.equityUsd, 2);
+    expect(checkpoints).toHaveLength(2);
+    expect(checkpoints[0]).toMatch(/^before:dec_/);
+    expect(checkpoints[1]).toBe(checkpoints[0]?.replace("before:", "after:"));
+  });
+
+  it("stops the tick when a settled fill cannot be durably checkpointed", async () => {
+    const wallet = new SimulatedWallet({ reserveUsd: 100, prices: { BNB: 600 }, riskScores: { BNB: 15 }, slippageBps: 20 });
+    const market = new FixtureMarketSource({ BNB: { asset: "BNB", closes: noisyUp(40) } });
+    await expect(
+      runTick({
+        constitution: constitution(),
+        state: initState(100, NOW),
+        wallet,
+        market,
+        synthesizer: confirm,
+        config: config(),
+        now: NOW,
+        executionObserver: {
+          async beforeExecution() {},
+          async afterExecution() {
+            throw new Error("disk unavailable");
+          },
+          async afterRejection() {},
+        },
+      }),
+    ).rejects.toThrow("could not checkpoint settled execution");
+    expect((await wallet.getPortfolio()).reserveUsd).toBeLessThan(100);
   });
 
   it("holds (no fill) when the signal is hold", async () => {

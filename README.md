@@ -4,13 +4,13 @@
 
 Built for **BNB HACK: AI Trading Agent Edition** (BNB Chain × CoinMarketCap × Trust Wallet).
 
-A deterministic strategy proposes trades from CoinMarketCap signals; a free deterministic reviewer (or optional Claude reviewer) can only confirm or veto; a signed, machine-readable **risk constitution** gates every order; and Trust Wallet's Agent Kit settles the cleared trade on BNB Chain. The agent's hard drawdown cap mirrors the competition's disqualification gate — **survival is the edge**.
+A deterministic strategy proposes trades from CoinMarketCap signals; a free deterministic reviewer (or optional Claude reviewer) can only confirm or veto; a signed, machine-readable **risk constitution** gates every order; and Trust Wallet's Agent Kit settles the cleared trade on BNB Chain. The agent enforces its own terminal drawdown cap — **survival is the edge**.
 
 ## Monorepo layout
 
 ```
 packages/policy/   The brain — risk constitution + policy engine + strategy + execution + orchestrator.
-                   Pure, deterministic, fully tested (no API key needed to run).
+                   Pure deterministic policy core with offline unit and integration tests.
 apps/web/          Next.js dashboard — live timeline of signal → verdict → ALLOW/DENY/CLAMP → tx,
                    portfolio, kill-switch, and a scripted demo (incl. a "trigger crash" circuit-breaker beat).
 ```
@@ -48,7 +48,6 @@ worker because Trust Wallet Agent Kit runs as a local MCP process (`twak serve`)
 npm install
 npm test
 npm run build:connectors
-cp .env.example .env.local
 ```
 
 2. Create `.env.worker.local` from `.env.example` and fill it with:
@@ -86,16 +85,32 @@ npm run live:runner
 ```
 
 `live:check` is read-only and validates the signed constitution, CMC feed, wallet portfolio,
-and token-risk lookup. The runner writes durable state to `RUNNER_STATE_PATH` and appends one
-JSON record per tick to `RUNNER_TIMELINE_PATH`. Balances are read from Trust Wallet each tick;
-persisted state is only counters, high-water mark, and kill-switch bookkeeping.
+token-risk lookup, and an executable quote for every configured asset. All live commands load
+`.env.worker.local` by default. `live:once` is not a dry run: it can execute one trade for each
+configured asset.
+
+The runner holds a single-process lock and writes an atomic execution intent before every wallet
+call. A known fill is checkpointed immediately and recovered idempotently after a crash. If the
+process loses the wallet response, the next run engages the kill switch because settlement is
+ambiguous. After verifying the execution ID and transaction outcome with TWAK/BscScan, reconcile it:
+
+```bash
+npm run live:reconcile -- --outcome rejected --execution-id dec_12345678
+npm run live:reconcile -- --outcome filled --execution-id dec_12345678 \
+  --filled-usd 0.20 --price 600 --slippage-bps 20 \
+  --tx-hash 0x... --executed-at 2026-06-22T00:15:00.000Z
+```
+
+Stop the runner before reconciliation. Never mark an ambiguous intent rejected until its absence
+has been confirmed on-chain. State, journal, lock, and timeline paths live under `.circuit-trader/`
+by default. Balances are refreshed from Trust Wallet each tick.
 
 When `LIVE_DASHBOARD_URL` and `LIVE_INGEST_SECRET` are set, each completed tick publishes a
 credential-free snapshot to the authenticated `/api/live` endpoint. The endpoint stores only
 the latest public snapshot in private Vercel Blob storage; browsers receive it through a
 read-only GET request.
 
-For an unattended Linux user service, adapt the units under `scripts/` and install them in
+For an unattended Linux VM, adapt the units under `scripts/` and install them in
 `~/.config/systemd/user/`. The start/stop timer examples bound execution to the Track 1 week.
 Enable lingering so the service survives logout, then inspect it with:
 
@@ -103,6 +118,10 @@ Enable lingering so the service survives logout, then inspect it with:
 systemctl --user list-timers 'circuit-trader-*'
 journalctl --user -u circuit-trader.service -f
 ```
+
+Do not use WSL, a laptop, or a host that sleeps for the competition worker. A systemd timer cannot
+run while that host is suspended or terminated. Confirm the organizer's exact UTC start/end times
+before installing the example timers; the public rules currently publish dates, not precise times.
 
 5. Before the Track 1 trading window opens on June 22, 2026, register the same agent wallet:
 
@@ -115,8 +134,8 @@ submission.
 
 ## Status
 
-Core engine complete and tested end-to-end (policy / strategy / execution / orchestrator).
-Dashboard demo runs on a simulated wallet. The Track 1 path now has a standalone VM/worker
-runner with durable JSON state, CMC MCP, a free deterministic or optional Claude reviewer,
-and Trust Wallet Agent Kit wiring. Operators must configure credentials, sign the live
-constitution, validate a tiny swap, register the wallet, and schedule the runner.
+Core engine and crash-safe worker path are implemented and tested across policy, strategy,
+execution, orchestration, and journal recovery. Dashboard demo runs on a simulated wallet. The
+Track 1 worker uses CMC MCP, a free deterministic or optional Claude reviewer, and Trust Wallet
+Agent Kit. Production operation still requires an always-on Linux VM, configured credentials, a
+signed constitution, successful full preflight, registered wallet, and verified UTC timers.

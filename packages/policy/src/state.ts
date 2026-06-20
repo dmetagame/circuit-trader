@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { TradeProposal } from "./types.js";
 
 /**
@@ -9,6 +10,8 @@ export interface RuntimeState {
   equityUsd: number;
   /** Peak equity ever seen — denominator for drawdown. */
   highWaterMarkUsd: number;
+  /** Equity observed when this state ledger was initialized. */
+  initialEquityUsd: number;
   /** Equity captured at the start of the current UTC day — denominator for daily loss. */
   startOfDayEquityUsd: number;
   /** UTC date (YYYY-MM-DD) the day-scoped counters belong to. */
@@ -23,6 +26,8 @@ export interface RuntimeState {
   lastTradeAtGlobal: string | null;
   /** Trades executed so far today. */
   tradesToday: number;
+  /** Bounded execution-id ledger used to make crash recovery idempotent. */
+  recordedExecutionIds: string[];
   killSwitchEngaged: boolean;
   killSwitchReason: string | null;
 }
@@ -32,6 +37,7 @@ export function initState(reserveUsd: number, nowIso: string): RuntimeState {
   return {
     equityUsd: reserveUsd,
     highWaterMarkUsd: reserveUsd,
+    initialEquityUsd: reserveUsd,
     startOfDayEquityUsd: reserveUsd,
     currentDayUtc: nowIso.slice(0, 10),
     reserveUsd,
@@ -39,6 +45,7 @@ export function initState(reserveUsd: number, nowIso: string): RuntimeState {
     lastTradeAtPerAsset: {},
     lastTradeAtGlobal: null,
     tradesToday: 0,
+    recordedExecutionIds: [],
     killSwitchEngaged: false,
     killSwitchReason: null,
   };
@@ -79,6 +86,7 @@ export function recordExecution(
   proposal: Pick<TradeProposal, "asset" | "side">,
   filledUsd: number,
   executedAtIso: string,
+  executionId?: string,
 ): RuntimeState {
   const positions = { ...state.positions };
   const current = positions[proposal.asset] ?? 0;
@@ -99,10 +107,34 @@ export function recordExecution(
     lastTradeAtPerAsset: { ...state.lastTradeAtPerAsset, [proposal.asset]: executedAtIso },
     lastTradeAtGlobal: executedAtIso,
     tradesToday: state.tradesToday + 1,
+    recordedExecutionIds: executionId
+      ? [...state.recordedExecutionIds.filter((id) => id !== executionId), executionId].slice(-500)
+      : state.recordedExecutionIds,
   };
 }
 
 /** Engage the kill switch (e.g. after a terminal drawdown decision). Returns a new state; pure. */
 export function engageKillSwitch(state: RuntimeState, reason: string): RuntimeState {
   return { ...state, killSwitchEngaged: true, killSwitchReason: reason };
+}
+
+const RuntimeStateSchema = z.object({
+  equityUsd: z.number().finite().nonnegative(),
+  highWaterMarkUsd: z.number().finite().nonnegative(),
+  initialEquityUsd: z.number().finite().nonnegative().default(0),
+  startOfDayEquityUsd: z.number().finite().nonnegative(),
+  currentDayUtc: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  reserveUsd: z.number().finite().nonnegative(),
+  positions: z.record(z.string(), z.number().finite().nonnegative()),
+  lastTradeAtPerAsset: z.record(z.string(), z.string().datetime()),
+  lastTradeAtGlobal: z.string().datetime().nullable(),
+  tradesToday: z.number().int().nonnegative(),
+  recordedExecutionIds: z.array(z.string().min(1)).max(500).default([]),
+  killSwitchEngaged: z.boolean(),
+  killSwitchReason: z.string().nullable(),
+});
+
+/** Validate persisted state and migrate records created before the tx-hash ledger existed. */
+export function parseRuntimeState(raw: unknown): RuntimeState {
+  return RuntimeStateSchema.parse(raw);
 }

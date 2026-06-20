@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { BlobNotFoundError, get, put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
-import { isLiveEnvelope, type LiveEnvelope } from "@/lib/live";
+import { isLiveEnvelope, normalizeLiveEnvelope, type LiveEnvelope } from "@/lib/live";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,9 +10,9 @@ const SNAPSHOT_PATH = "circuit-trader/live/latest.json";
 
 export async function GET() {
   try {
-    const result = await get(SNAPSHOT_PATH, { access: "private" });
-    if (!result?.stream) return NextResponse.json({ available: false }, { status: 404 });
-    const value: unknown = await new Response(result.stream).json();
+    const raw = await readSnapshot();
+    if (!raw) return NextResponse.json({ available: false }, { status: 404 });
+    const value = normalizeLiveEnvelope(raw);
     if (!isLiveEnvelope(value)) {
       return NextResponse.json({ error: "stored live snapshot is invalid" }, { status: 500 });
     }
@@ -33,9 +33,19 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   if (!authorized(request)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+  if (contentLength > 512_000) return NextResponse.json({ error: "snapshot too large" }, { status: 413 });
 
-  const value: unknown = await request.json();
+  const value: unknown = normalizeLiveEnvelope(await request.json());
   if (!isLiveEnvelope(value)) return NextResponse.json({ error: "invalid live snapshot" }, { status: 400 });
+  const incomingTime = Date.parse(value.updatedAt);
+  if (incomingTime > Date.now() + 5 * 60_000) {
+    return NextResponse.json({ error: "snapshot timestamp is in the future" }, { status: 400 });
+  }
+  const current = normalizeLiveEnvelope(await readSnapshot());
+  if (current && isLiveEnvelope(current) && Date.parse(current.updatedAt) >= incomingTime) {
+    return NextResponse.json({ error: "snapshot is not newer than the stored value" }, { status: 409 });
+  }
 
   const envelope: LiveEnvelope = {
     updatedAt: value.updatedAt,
@@ -64,4 +74,10 @@ function authorized(request: NextRequest): boolean {
 function isMissingBlobConfiguration(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("BLOB_READ_WRITE_TOKEN") || message.includes("Blob store");
+}
+
+async function readSnapshot(): Promise<unknown | null> {
+  const result = await get(SNAPSHOT_PATH, { access: "private" });
+  if (!result?.stream) return null;
+  return new Response(result.stream).json();
 }

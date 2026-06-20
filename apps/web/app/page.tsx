@@ -30,6 +30,7 @@ export default function Page() {
   const [mode, setMode] = useState<"live" | "demo">("live");
   const [demoSnap, setDemoSnap] = useState<Snapshot | null>(null);
   const [live, setLive] = useState<LiveEnvelope | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
   const [liveLoaded, setLiveLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -39,8 +40,9 @@ export default function Page() {
   const refreshLive = useCallback(async () => {
     try {
       setLive(await call<LiveEnvelope>("/api/live", "GET"));
-    } catch {
-      setLive(null);
+      setLiveError(null);
+    } catch (error) {
+      setLiveError(error instanceof Error ? error.message : "Live feed unavailable");
     } finally {
       setLiveLoaded(true);
     }
@@ -198,8 +200,8 @@ export default function Page() {
           Survival is <span className="accent">the edge</span>.
         </h1>
         <p className="lede">
-          An autonomous trading agent that <strong>cannot trade unless its own signed risk constitution allows it</strong>. The LLM proposes; the
-          constitution disposes. The drawdown cap mirrors the competition&apos;s DQ gate.
+          An autonomous trading agent that <strong>cannot trade unless its own signed risk constitution allows it</strong>. The strategy proposes;
+          the constitution disposes. Every terminal drawdown breach engages the kill switch.
         </p>
       </div>
 
@@ -211,6 +213,7 @@ export default function Page() {
       {!snap ? (
         <div className="empty">
           {mode === "live" && liveLoaded ? "Awaiting the first worker snapshot." : "Loading…"}
+          {mode === "live" && liveLoaded && liveError ? ` Live feed error: ${liveError}` : null}
         </div>
       ) : (
         <>
@@ -218,7 +221,8 @@ export default function Page() {
             <div className="banner tripped">⛔ CIRCUIT BREAKER TRIPPED — {snap.killSwitch.reason ?? "kill switch engaged"}. Trading halted.</div>
           ) : mode === "live" ? (
             <div className={`banner ${liveStale ? "stale" : "armed"}`}>
-              {liveStale ? "STALE" : "LIVE"} — worker snapshot {new Date(live!.updatedAt).toLocaleString()}.
+              {liveError ? "STALE" : liveStale ? "STALE" : "LIVE"} — worker snapshot {new Date(live!.updatedAt).toLocaleString()}.
+              {liveError ? ` Polling error: ${liveError}` : null}
             </div>
           ) : (
             <div className="banner armed">● ARMED — constitution enforced on every order.</div>
@@ -248,10 +252,15 @@ export default function Page() {
               <Kv k="Wallet" v={`${snap.constitution.walletAddress.slice(0, 6)}…${snap.constitution.walletAddress.slice(-4)}`} />
               <Kv k="Allowed" v={snap.constitution.allowedAssets.join(", ")} />
               <Kv k="Reserve" v={snap.constitution.reserveAsset} />
+              {snap.constitution.nativeAsset && snap.constitution.minNativeGasReserveUsd != null ? (
+                <Kv k="Gas reserve" v={`${snap.constitution.nativeAsset} ${fmt(snap.constitution.minNativeGasReserveUsd)}`} />
+              ) : null}
               <Kv k="Max trade" v={fmt(snap.constitution.maxTradeUsd)} />
               <Kv k="Max drawdown" v={`${snap.constitution.maxDrawdownPct}%`} />
               <Kv k="Min confidence" v={snap.constitution.minSignalConfidence.toFixed(2)} />
               <Kv k="Max token risk" v={String(snap.constitution.maxTokenRiskScore)} />
+              {snap.constitution.digest ? <Kv k="Policy digest" v={`${snap.constitution.digest.slice(0, 10)}…${snap.constitution.digest.slice(-8)}`} /> : null}
+              {snap.constitution.signer ? <Kv k="Signer" v={`${snap.constitution.signer.slice(0, 8)}…${snap.constitution.signer.slice(-6)}`} /> : null}
             </div>
 
             <div className="panel reveal">
@@ -293,6 +302,13 @@ function Cards({ snap, tripped }: { snap: Snapshot; tripped: boolean }) {
           <AnimatedNumber value={snap.portfolio.equityUsd} format={fmtUsd} />
         </div>
         <div className="sub">reserve {fmt(snap.portfolio.reserveUsd)}</div>
+      </div>
+      <div className="card">
+        <div className="label">Return</div>
+        <div className={`value ${snap.returnPct < 0 ? "bad" : "ok"}`}>
+          <AnimatedNumber value={snap.returnPct} format={fmtPct} />
+        </div>
+        <div className="sub">PnL {fmt(snap.pnlUsd)} · start {fmt(snap.initialEquityUsd)}</div>
       </div>
       <div className="card">
         <div className="label">Drawdown</div>

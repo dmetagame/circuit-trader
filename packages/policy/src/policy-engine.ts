@@ -1,6 +1,6 @@
 import type { Constitution } from "./constitution.js";
 import { rollDay, totalNonReserveExposureUsd, type RuntimeState } from "./state.js";
-import type { Adjustment, PolicyDecision, TradeProposal, Violation, ViolationCode } from "./types.js";
+import { TradeProposalSchema, type Adjustment, type PolicyDecision, type TradeProposal, type Violation, type ViolationCode } from "./types.js";
 
 export interface EvaluateArgs {
   constitution: Constitution;
@@ -32,6 +32,19 @@ export function evaluate({ constitution: c, state: rawState, proposal, now }: Ev
     audit.push(`✗ ${v.code}: ${v.message} (observed ${v.observed}, limit ${v.limit})`);
   };
   const pass = (msg: string) => audit.push(`✓ ${msg}`);
+
+  const parsedProposal = TradeProposalSchema.safeParse(proposal);
+  if (!parsedProposal.success) {
+    block({
+      code: "INVALID_PROPOSAL",
+      severity: "block",
+      message: "proposal failed runtime validation",
+      observed: parsedProposal.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "),
+      limit: "finite, bounded, schema-valid trade proposal",
+    });
+    return deny({ proposal, now, violations, adjustments, audit, engageKill, killReason });
+  }
+  proposal = parsedProposal.data;
 
   // --- 0. Hard halts that ignore everything else ---
   if (state.killSwitchEngaged) {
@@ -212,6 +225,9 @@ export function evaluate({ constitution: c, state: rawState, proposal, now }: Ev
     });
   } else {
     caps.push({ code: "INSUFFICIENT_POSITION", cap: currentPos });
+    if (proposal.asset === c.nativeAsset && c.portfolio.minNativeGasReserveUsd != null) {
+      caps.push({ code: "NATIVE_GAS_RESERVE", cap: currentPos - c.portfolio.minNativeGasReserveUsd });
+    }
   }
 
   const binding = caps.reduce((min, cur) => (cur.cap < min.cap ? cur : min));
@@ -252,7 +268,7 @@ export function evaluate({ constitution: c, state: rawState, proposal, now }: Ev
       });
       return deny({ proposal, now, violations, adjustments, audit, engageKill, killReason });
     }
-    effectiveSize = round2(bindingCap);
+    effectiveSize = floor2(bindingCap);
     adjustments.push({ reason: binding.code, field: "sizeUsd", from: proposal.sizeUsd, to: effectiveSize });
     audit.push(`~ CLAMP sizeUsd ${proposal.sizeUsd} -> ${effectiveSize} (${binding.code})`);
   } else {
@@ -302,6 +318,10 @@ function deny(args: {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function floor2(n: number): number {
+  return Math.floor((n + Number.EPSILON) * 100) / 100;
 }
 
 /** Stable, dependency-free id for a decision (FNV-1a over proposal + timestamp). */

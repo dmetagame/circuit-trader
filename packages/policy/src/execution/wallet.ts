@@ -55,13 +55,21 @@ export interface Wallet {
   /** Trust Wallet token risk score, 0..100 (higher = riskier). */
   getTokenRiskScore(asset: string): Promise<number>;
   getQuote(req: QuoteRequest): Promise<QuoteResult>;
-  /** Execute the swap. MUST reject (throw) if real slippage exceeds `order.maxSlippageBps`. */
+  /** Execute the swap. The implementation must pass `maxSlippageBps` to the settlement layer. */
   executeSwap(order: SwapOrder, now: string): Promise<Fill>;
   getPortfolio(): Promise<Portfolio>;
 }
 
+/** A wallet error that guarantees no transaction was submitted. */
+export class ExecutionRejectedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ExecutionRejectedError";
+  }
+}
+
 /** Raised when a fill would exceed the constitution's slippage cap. */
-export class SlippageExceededError extends Error {
+export class SlippageExceededError extends ExecutionRejectedError {
   constructor(
     readonly observedBps: number,
     readonly maxBps: number,

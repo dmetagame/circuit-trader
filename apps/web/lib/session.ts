@@ -2,6 +2,7 @@ import {
   runTick,
   SimulatedWallet,
   FixtureMarketSource,
+  constitutionDigest,
   initState,
   parseConstitution,
   type AssetTickResult,
@@ -100,15 +101,22 @@ export interface Snapshot {
     walletAddress: string;
     allowedAssets: string[];
     reserveAsset: string;
+    nativeAsset?: string;
+    minNativeGasReserveUsd?: number;
     maxTradeUsd: number;
     maxDrawdownPct: number;
     minSignalConfidence: number;
     maxTokenRiskScore: number;
+    digest?: string;
+    signer?: string | null;
   };
   portfolio: { equityUsd: number; reserveUsd: number; positions: Record<string, number> };
   killSwitch: { engaged: boolean; reason: string | null };
   highWaterMarkUsd: number;
   drawdownPct: number;
+  initialEquityUsd: number;
+  pnlUsd: number;
+  returnPct: number;
   tickCount: number;
   timeline: TickView[];
 }
@@ -170,15 +178,22 @@ class Session {
         walletAddress: this.constitution.walletAddress,
         allowedAssets: this.constitution.allowedAssets,
         reserveAsset: this.constitution.reserveAsset,
+        nativeAsset: this.constitution.nativeAsset,
+        minNativeGasReserveUsd: this.constitution.portfolio.minNativeGasReserveUsd,
         maxTradeUsd: this.constitution.perTrade.maxTradeUsd,
         maxDrawdownPct: this.constitution.riskGates.maxDrawdownPct,
         minSignalConfidence: this.constitution.riskGates.minSignalConfidence,
         maxTokenRiskScore: this.constitution.riskGates.maxTokenRiskScore,
+        digest: constitutionDigest(this.constitution),
+        signer: this.constitution.signature?.signer ?? null,
       },
       portfolio: pf,
       killSwitch: { engaged: this.state.killSwitchEngaged, reason: this.state.killSwitchReason },
       highWaterMarkUsd: hwm,
       drawdownPct: hwm > 0 ? ((hwm - pf.equityUsd) / hwm) * 100 : 0,
+      initialEquityUsd: this.state.initialEquityUsd,
+      pnlUsd: pf.equityUsd - this.state.initialEquityUsd,
+      returnPct: this.state.initialEquityUsd > 0 ? ((pf.equityUsd - this.state.initialEquityUsd) / this.state.initialEquityUsd) * 100 : 0,
       tickCount: this.tickIndex,
       timeline: this.timeline,
     };

@@ -2,31 +2,32 @@
 
 > An autonomous BNB-chain trading agent that **cannot trade unless its own signed risk constitution allows it.**
 
-This package is the core differentiator: a **machine-readable, signed policy contract** (the *Risk Constitution*) plus a **pure, deterministic policy engine** that gates every proposed trade. It is framework-agnostic and drops into the Next.js app as the safety layer between the LLM/strategy and Trust Wallet execution.
+This package is the core differentiator: a **machine-readable, signed policy contract** (the *Risk Constitution*) plus a **pure, deterministic policy engine** that gates every proposed trade. It is framework-agnostic and sits between the strategy/reviewer and Trust Wallet execution.
 
 ## Why this exists (and why it wins)
 
-BNB HACK Track 1 ranks agents by **total return on a held-out window**, with a **hard max-drawdown disqualification gate**, a **minimum trade count**, and **simulated transaction costs**. The constitution is engineered against those exact rules:
+BNB HACK Track 1 evaluates live performance, including return, drawdown, risk-adjusted results,
+rule adherence, and replayability. The constitution maps those concerns into explicit controls:
 
 | Competition rule | Constitution lever |
 |---|---|
-| Max-drawdown DQ gate (~30%) | `riskGates.maxDrawdownPct` — set **below** the DQ threshold; breaching it is *terminal* and engages the kill switch |
-| Minimum trade count | `perTrade.minTradeUsd` keeps trades meaningful (not dust) so they count |
-| Simulated tx costs punish over-trading | `activity.cooldownMinutesPerAsset`, `minTradeIntervalSeconds`, `maxTradesPerDay` |
+| Drawdown control | `riskGates.maxDrawdownPct` — breaching the signed cap is terminal and engages the kill switch |
+| Meaningful execution | `perTrade.minTradeUsd` rejects dust trades |
+| Transaction-cost control | `activity.cooldownMinutesPerAsset`, `minTradeIntervalSeconds`, `maxTradesPerDay` |
 | Unattended held-out window | engine is **pure & deterministic** — reproducible, auditable, safe to run without a human watching |
 
-Thesis: many entrants will DQ by blowing the drawdown gate or fail the min-trade-count. A competent, **surviving**, modestly-positive agent places well by *not dying*. The constitution is that survival mechanism — and the audit trail is the originality/demo story for the sponsor special prizes.
+The constitution is the survival mechanism; the audit trail makes every decision replayable.
 
 ## Architecture
 
 ```
-CMC signals ─▶ LLM verdict ─▶ TradeProposal ─▶ [ POLICY ENGINE ] ─▶ allowed?
+CMC signals ─▶ reviewer verdict ─▶ TradeProposal ─▶ [ POLICY ENGINE ] ─▶ allowed?
  (data)         (synthesis)     (intent)          (this package)        │
                                                                         ├─ ALLOW (+maybe clamp) ─▶ Trust Wallet swap on BNB
                                                                         └─ DENY (structured reasons) ─▶ dashboard timeline
 ```
 
-The LLM **synthesizes and explains**; it never executes. The engine and deterministic code touch the chain. That single boundary neutralizes the "is the LLM safe / is it just a narrator?" critique: the LLM proposes, the constitution disposes.
+The reviewer **synthesizes and explains**; it never executes. The default reviewer is deterministic and free; an optional LLM can only confirm or veto. The policy engine and wallet adapter control execution.
 
 ## Usage
 
@@ -60,7 +61,7 @@ A signed JSON document (see `src/example.constitution.json`). Validated by a Zod
 ## Decision model
 
 - **Hard gates** (kill switch, expiry, drawdown, daily loss, confidence, token risk, allowlist, cooldown, interval, max-trades, slippage) → `DENY`.
-- **Drawdown breach** → `DENY` **+ terminal** → caller engages the kill switch (mirrors the DQ gate).
+- **Drawdown breach** → `DENY` **+ terminal** → caller engages the kill switch.
 - **Sizing** → computes the binding cap from `maxTradeUsd`, reserve, per-asset concentration, and portfolio exposure (buys) or holdings (sells). Oversized trades are **clamped** to the cap when `enforcement.clampOversizedTrades` is true, or denied otherwise. If the cap is below `minTradeUsd`, the trade is `UNCLAMPABLE` → denied.
 
 Every decision carries a structured `violations[]`, `adjustments[]`, and a human-readable `audit[]` — that's what renders on the dashboard and proves *why* each action was or wasn't allowed.
@@ -92,33 +93,19 @@ const out = await proposeTrade({
 
 ## Orchestrator (`src/orchestrator/`)
 
-`runTick()` is the loop: reconcile balances → circuit-breaker pre-check → per asset `{ signal → verdict → policy → execute }`. It's a plain function (pure w.r.t. persistence) so it runs identically in a Vercel Cron route, a worker, or a test.
+`runTick()` is the loop: reconcile balances → circuit-breaker pre-check → per asset `{ signal → verdict → policy → execute }`. Execution observers let a persistent worker durably journal intent and checkpoint each fill before another order.
 
 - `market-source.ts` — `MarketDataSource` **port** (price closes + soft CMC context; token risk comes from the Wallet, not here). `FixtureMarketSource` for tests/paper-trading; `CmcMcpSource` adapter over an injected `McpTransport`, with the CMC Agent Hub tool names isolated + flagged (verify against `https://mcp.coinmarketcap.com/mcp`). Soft signals are best-effort — a missing narrative/funding tool never breaks the price path.
 - `orchestrator.ts` — `runTick()`. Reconciles `RuntimeState` from `wallet.getPortfolio()` each tick (balances are ground truth; counters/kill-switch persist). The **circuit breaker is a pre-check** — it trips even on a no-trade tick, so an unattended agent halts on a crash regardless of signals.
 
-```ts
-// app/api/cron/route.ts (Vercel Cron)
-import { runTick } from "circuit-trader-policy";
-
-export async function GET() {
-  const state = await loadState();              // your KV/DB
-  const tick = await runTick({
-    constitution, state, wallet, market,        // wallet = TrustWalletWallet, market = CmcMcpSource
-    synthesizer: claudeSynthesizer(),
-    config: { strategy: DEFAULT_STRATEGY, sizing: { baseTradeUsd: 4, minStrengthToTrade: 0.2 }, assets: ["BNB", "ETH", "CAKE"] },
-    now: new Date().toISOString(),
-  });
-  await saveState(tick.state);                  // persist new state
-  await appendTimeline(tick.results);           // audit[] / fills -> dashboard
-  return Response.json({ note: tick.note, killSwitch: tick.killSwitchEngaged });
-}
-```
+The live worker is `scripts/live-runner.mjs`. It supplies an `ExecutionObserver` backed by an
+fsynced write-ahead journal. Do not call `runTick()` with a real wallet from a stateless cron or
+without equivalent intent/fill persistence.
 
 ## Develop
 
 ```bash
 npm install
-npm test        # vitest — covers allow / each denial / clamp / terminal drawdown / signing
+npm test        # policy, strategy, execution, orchestration, connector, and recovery tests
 npm run build   # tsc -> dist/
 ```

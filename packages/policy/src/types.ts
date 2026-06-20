@@ -1,7 +1,21 @@
+import { z } from "zod";
+
 /** A trade the strategy/LLM wants to make. The policy engine decides if it's allowed. */
 export type TradeSide = "buy" | "sell"; // buy: reserve -> asset ; sell: asset -> reserve
 
-export interface TradeProposal {
+export const TradeProposalSchema = z.object({
+  asset: z.string().min(1).max(16).regex(/^[A-Z0-9]+$/),
+  side: z.enum(["buy", "sell"]),
+  sizeUsd: z.number().finite().positive(),
+  expectedSlippageBps: z.number().finite().min(0).max(10_000),
+  signalConfidence: z.number().finite().min(0).max(1),
+  tokenRiskScore: z.number().finite().min(0).max(100),
+  rationale: z.string(),
+  proposedAt: z.string().datetime(),
+  quoteId: z.string().min(1).optional(),
+});
+
+export interface TradeProposal extends z.infer<typeof TradeProposalSchema> {
   /** The non-reserve asset being entered/exited (e.g. "BNB"). */
   asset: string;
   side: TradeSide;
@@ -22,6 +36,7 @@ export interface TradeProposal {
 }
 
 export type ViolationCode =
+  | "INVALID_PROPOSAL"
   | "KILL_SWITCH" // manual master-off (state or constitution)
   | "CONSTITUTION_EXPIRED"
   | "DRAWDOWN_BREACH" // terminal
@@ -39,6 +54,7 @@ export type ViolationCode =
   | "EXPOSURE_EXCEEDED"
   | "INSUFFICIENT_RESERVE"
   | "INSUFFICIENT_POSITION"
+  | "NATIVE_GAS_RESERVE"
   | "UNCLAMPABLE"; // size can't be reduced enough to satisfy minTradeUsd
 
 export interface Violation {

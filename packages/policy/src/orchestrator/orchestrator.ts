@@ -10,7 +10,7 @@ import {
 import { generateSignal, signalFromIndicators, type Signal, type StrategyConfig } from "../strategy/signals.js";
 import { deterministicSynthesizer, type Synthesizer, type Verdict } from "../strategy/synthesizer.js";
 import { buildProposalFromSignal, type SizingConfig } from "../strategy/strategy.js";
-import { SlippageExceededError, type Fill, type Portfolio, type Wallet } from "../execution/wallet.js";
+import { ExecutionRejectedError, type Fill, type Portfolio, type SwapOrder, type Wallet } from "../execution/wallet.js";
 import type { PolicyDecision } from "../types.js";
 import type { MarketDataSource, MarketSignals } from "./market-source.js";
 
@@ -57,6 +57,31 @@ export interface TickInput {
   now: string;
   /** Defaults to the no-LLM deterministic synthesizer. */
   synthesizer?: Synthesizer;
+  executionObserver?: ExecutionObserver;
+}
+
+export interface ExecutionIntent {
+  executionId: string;
+  decisionId: string;
+  evaluatedAt: string;
+  order: SwapOrder;
+  portfolioBefore: Portfolio;
+}
+
+export interface ExecutionObserver {
+  /** Must durably record intent before the wallet is allowed to submit a transaction. */
+  beforeExecution(intent: ExecutionIntent): Promise<void>;
+  /** Must durably checkpoint the returned fill and updated state before another order. */
+  afterExecution(intent: ExecutionIntent, fill: Fill, state: RuntimeState): Promise<void>;
+  /** Clear a write-ahead intent after the wallet guarantees no transaction was submitted. */
+  afterRejection(intent: ExecutionIntent, error: ExecutionRejectedError): Promise<void>;
+}
+
+export class ExecutionPersistenceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ExecutionPersistenceError";
+  }
 }
 
 function drawdownPct(state: RuntimeState): number {
@@ -67,15 +92,21 @@ function drawdownPct(state: RuntimeState): number {
 /** Pull balance truth from the wallet into state, roll the day, raise the high-water mark. */
 function reconcile(state: RuntimeState, pf: Portfolio, now: string): RuntimeState {
   return markHighWater(
-    rollDay({ ...state, equityUsd: pf.equityUsd, reserveUsd: pf.reserveUsd, positions: pf.positions }, now),
+    rollDay({
+      ...state,
+      equityUsd: pf.equityUsd,
+      initialEquityUsd: state.initialEquityUsd > 0 ? state.initialEquityUsd : pf.equityUsd,
+      reserveUsd: pf.reserveUsd,
+      positions: pf.positions,
+    }, now),
   );
 }
 
 /**
  * One orchestration tick: reconcile balances → check the circuit breaker → for each asset
  * { signal → verdict → policy → execute }. Pure w.r.t. persistence — give it the prior state,
- * get back the new state and a full per-asset audit. Run it from a Vercel Cron route, a worker,
- * or a test; behaviour is identical.
+ * get back the new state and a full per-asset audit. Real execution requires a persistent host
+ * with an execution observer; simulations can call it directly.
  */
 export async function runTick(input: TickInput): Promise<TickResult> {
   const { constitution: c, wallet, market, config, now } = input;
@@ -162,22 +193,66 @@ export async function runTick(input: TickInput): Promise<TickResult> {
 
       if (decision.allowed && decision.effectiveProposal) {
         const ep = decision.effectiveProposal;
+        const order: SwapOrder = {
+          asset: ep.asset,
+          side: ep.side,
+          sizeUsd: ep.sizeUsd,
+          maxSlippageBps: c.perTrade.maxSlippageBps,
+          ...(ep.quoteId ? { quoteId: ep.quoteId } : {}),
+        };
+        const intent: ExecutionIntent = {
+          executionId: decision.decisionId,
+          decisionId: decision.decisionId,
+          evaluatedAt: decision.evaluatedAt,
+          order,
+          portfolioBefore: {
+            reserveUsd: state.reserveUsd,
+            positions: { ...state.positions },
+            equityUsd: state.equityUsd,
+          },
+        };
         try {
-          const fill = await wallet.executeSwap(
-            { asset: ep.asset, side: ep.side, sizeUsd: ep.sizeUsd, maxSlippageBps: c.perTrade.maxSlippageBps, ...(ep.quoteId ? { quoteId: ep.quoteId } : {}) },
-            now,
-          );
+          if (input.executionObserver) {
+            try {
+              await input.executionObserver.beforeExecution(intent);
+            } catch (error) {
+              throw new ExecutionPersistenceError("could not persist execution intent", { cause: error });
+            }
+          }
+          const fill = await wallet.executeSwap(order, now);
           r.fill = fill;
-          state = recordExecution(state, ep, fill.filledUsd, fill.executedAt);
+          state = recordExecution(state, ep, fill.filledUsd, fill.executedAt, intent.executionId);
           // Refresh balances so later assets in this tick see accurate reserve/exposure.
           state = reconcile(state, await wallet.getPortfolio(), now);
+          if (input.executionObserver) {
+            try {
+              await input.executionObserver.afterExecution(intent, fill, state);
+            } catch (error) {
+              throw new ExecutionPersistenceError("could not checkpoint settled execution", { cause: error });
+            }
+          }
+          if (fill.slippageBps > c.perTrade.maxSlippageBps) {
+            r.audit.push(`SETTLED WARNING: realized slippage ${fill.slippageBps}bps exceeded requested cap ${c.perTrade.maxSlippageBps}bps`);
+          }
           r.audit.push(`EXECUTED ${ep.side} ${fill.filledUsd} USD ${asset} @ ${fill.price} → ${fill.txHash}`);
         } catch (e) {
-          r.error = e instanceof SlippageExceededError ? e.message : e instanceof Error ? e.message : String(e);
+          if (e instanceof ExecutionPersistenceError) throw e;
+          if (input.executionObserver) {
+            if (!(e instanceof ExecutionRejectedError)) {
+              throw new ExecutionPersistenceError("wallet outcome is ambiguous; execution journal retained", { cause: e });
+            }
+            try {
+              await input.executionObserver.afterRejection(intent, e);
+            } catch (error) {
+              throw new ExecutionPersistenceError("could not clear rejected execution intent", { cause: error });
+            }
+          }
+          r.error = e instanceof Error ? e.message : String(e);
           r.audit.push(`EXECUTION FAILED: ${r.error}`);
         }
       }
     } catch (e) {
+      if (e instanceof ExecutionPersistenceError) throw e;
       r.error = e instanceof Error ? e.message : String(e);
       r.audit.push(`ERROR: ${r.error}`);
     }

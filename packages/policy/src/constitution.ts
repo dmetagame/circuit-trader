@@ -7,10 +7,7 @@ import { z } from "zod";
  * under which the agent is permitted to trade. The policy engine evaluates every
  * proposed trade against this document; nothing reaches the chain without passing.
  *
- * Design intent for BNB HACK Track 1: `riskGates.maxDrawdownPct` mirrors the
- * competition's hard disqualification gate. Keeping the constitution's cap at or
- * below the competition threshold is what keeps an unattended agent on the
- * leaderboard while reckless bots blow up.
+ * `riskGates.maxDrawdownPct` is the agent's signed terminal loss boundary.
  */
 
 const AssetSymbol = z
@@ -35,6 +32,7 @@ export const ConstitutionSchema = z
     // --- Trading universe ---
     allowedAssets: z.array(AssetSymbol).min(1).max(20),
     reserveAsset: AssetSymbol.default("USDT"), // the safe asset positions are exited into
+    nativeAsset: AssetSymbol.optional(), // chain gas asset, e.g. BNB
 
     // --- Per-trade limits ---
     perTrade: z.object({
@@ -45,7 +43,7 @@ export const ConstitutionSchema = z
 
     // --- Risk gates (hard stops) ---
     riskGates: z.object({
-      maxDrawdownPct: z.number().positive().max(100), // TERMINAL — engages kill switch (mirrors Track 1 DQ gate)
+      maxDrawdownPct: z.number().positive().max(100), // TERMINAL — engages kill switch
       dailyLossLimitPct: z.number().positive().max(100), // halts trading for the rest of the UTC day
       minSignalConfidence: z.number().min(0).max(1), // LLM verdict confidence floor
       maxTokenRiskScore: z.number().min(0).max(100), // Trust Wallet token risk score ceiling (higher = riskier)
@@ -55,6 +53,7 @@ export const ConstitutionSchema = z
     portfolio: z.object({
       maxConcentrationPctPerAsset: z.number().positive().max(100), // single-asset cap as % of equity
       maxPortfolioExposurePct: z.number().positive().max(100), // total non-reserve exposure as % of equity
+      minNativeGasReserveUsd: z.number().finite().nonnegative().optional(),
     }),
 
     // --- Activity & transaction-cost controls ---
@@ -87,6 +86,14 @@ export const ConstitutionSchema = z
   .refine((c) => c.allowedAssets.includes(c.reserveAsset), {
     message: "reserveAsset must be listed in allowedAssets",
     path: ["reserveAsset"],
+  })
+  .refine((c) => !c.nativeAsset || c.allowedAssets.includes(c.nativeAsset), {
+    message: "nativeAsset must be listed in allowedAssets",
+    path: ["nativeAsset"],
+  })
+  .refine((c) => (c.nativeAsset == null) === (c.portfolio.minNativeGasReserveUsd == null), {
+    message: "nativeAsset and portfolio.minNativeGasReserveUsd must be configured together",
+    path: ["portfolio", "minNativeGasReserveUsd"],
   });
 
 export type Constitution = z.infer<typeof ConstitutionSchema>;

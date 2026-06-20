@@ -148,18 +148,19 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
     expect(await hw.getTokenRiskScore("SCAM")).toBe(100);
   });
 
-  it("enforces the slippage cap client-side even if the swap reports worse fill", async () => {
+  it("returns a settled fill even when reported slippage exceeds the requested cap", async () => {
     const greedy: TwakTransport = {
       async callTool(name) {
         if (name === "get_wallet_status") return { state: "local" };
+        if (name === "get_address") return { address: "0x" + "3".repeat(40) };
         if (name === "get_token_price") return { priceUsd: 600 };
         return { success: true, txHash: "0x" + "cd".repeat(32), output: "0.0081 BNB", priceImpact: "5" }; // 500 bps
       },
     };
     const gw = new TrustWalletWallet({ transport: greedy, chain: "bsc" });
-    await expect(
-      gw.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW),
-    ).rejects.toBeInstanceOf(SlippageExceededError);
+    const fill = await gw.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW);
+    expect(fill.slippageBps).toBe(500);
+    expect(fill.txHash).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
   it("derives realized slippage from output when the live swap omits priceImpact", async () => {
@@ -168,19 +169,20 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
     const noImpact: TwakTransport = {
       async callTool(name) {
         if (name === "get_wallet_status") return { state: "local" };
+        if (name === "get_address") return { address: "0x" + "4".repeat(40) };
         if (name === "get_token_price") return { priceUsd: 500 };
         return { success: true, txHash: "0x" + "ef".repeat(32), output: "0.0098 BNB" };
       },
     };
     const w2 = new TrustWalletWallet({ transport: noImpact, chain: "bsc" });
-    await expect(
-      w2.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW),
-    ).rejects.toBeInstanceOf(SlippageExceededError);
+    const looseFill = await w2.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW);
+    expect(looseFill.slippageBps).toBe(200);
 
     // A tight fill (0.00999 BNB = 10bps) clears the same cap and reports the realized slippage.
     const tight: TwakTransport = {
       async callTool(name) {
         if (name === "get_wallet_status") return { state: "local" };
+        if (name === "get_address") return { address: "0x" + "5".repeat(40) };
         if (name === "get_token_price") return { priceUsd: 500 };
         return { success: true, txHash: "0x" + "12".repeat(32), output: "0.00999 BNB" };
       },
@@ -189,6 +191,30 @@ describe("TrustWalletWallet (adapter over a mock MCP transport — live twak ser
     const fill = await w3.executeSwap({ asset: "BNB", side: "buy", sizeUsd: 5, maxSlippageBps: 75 }, NOW);
     expect(fill.slippageBps).toBe(10);
     expect(fill.filledUsd).toBe(5);
+  });
+
+  it("rejects a configured wallet that differs from TWAK's bound signer", async () => {
+    const t: TwakTransport = {
+      async callTool(name) {
+        if (name === "get_wallet_status") return { state: "local" };
+        if (name === "get_address") return { address: "0x" + "6".repeat(40) };
+        throw new Error(`unexpected tool ${name}`);
+      },
+    };
+    const mismatched = new TrustWalletWallet({ transport: t, address: "0x" + "7".repeat(40) });
+    await expect(mismatched.getPortfolio()).rejects.toThrow("does not match configured wallet");
+  });
+
+  it("fails closed when a balance response has no finite fiat value", async () => {
+    const t: TwakTransport = {
+      async callTool(name) {
+        if (name === "get_wallet_status") return { state: "local" };
+        if (name === "get_address") return { address: "0x" + "8".repeat(40) };
+        if (name === "get_balance") return { amounts: {} };
+        throw new Error(`unexpected tool ${name}`);
+      },
+    };
+    await expect(new TrustWalletWallet({ transport: t }).getPortfolio()).rejects.toThrow("invalid balance response");
   });
 });
 

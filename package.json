@@ -8,7 +8,8 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "npm -w packages/policy run test && npm -w packages/connectors run test",
+    "test": "npm -w packages/policy run test && npm -w packages/connectors run test && npm run test:runner",
+    "test:runner": "npm run build:policy && node --test scripts/durable-execution.test.mjs",
     "build:policy": "npm -w packages/policy run build",
     "build:connectors": "npm run build:policy && npm -w packages/connectors run build",
     "dev": "npm -w apps/web run dev",
@@ -16,6 +17,7 @@
     "constitution:sign": "npm run build:policy && node scripts/sign-constitution.mjs",
     "live:check": "npm run build:connectors && node scripts/live-runner.mjs --check",
     "live:once": "npm run build:connectors && node scripts/live-runner.mjs --once",
-    "live:runner": "npm run build:connectors && node scripts/live-runner.mjs"
+    "live:runner": "npm run build:connectors && node scripts/live-runner.mjs",
+    "live:reconcile": "npm run build:policy && node scripts/reconcile-execution.mjs"
   }
 }
