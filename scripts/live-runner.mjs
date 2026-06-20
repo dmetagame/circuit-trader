@@ -172,7 +172,8 @@ async function runOnce() {
       await appendJsonl(timelinePath, { kind: "publish-error", now, error: message });
     }
   } catch (error) {
-    const emergencyRecovery = await journal.recover(state);
+    const persistedState = (await loadState(statePath)) ?? state;
+    const emergencyRecovery = await journal.recover(persistedState);
     if (emergencyRecovery.outcome !== "none") {
       await appendJsonl(timelinePath, {
         kind: "execution-recovery",
@@ -288,6 +289,7 @@ async function publishLiveSnapshot(constitution, tick) {
         maxTokenRiskScore: constitution.riskGates.maxTokenRiskScore,
         digest: constitutionDigest(constitution),
         signer: constitution.signature?.signer ?? null,
+        signature: constitution.signature?.value ?? null,
       },
       portfolio: tick.portfolioAfter,
       killSwitch: { engaged: tick.state.killSwitchEngaged, reason: tick.state.killSwitchReason },

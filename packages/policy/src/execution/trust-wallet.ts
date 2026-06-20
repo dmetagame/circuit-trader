@@ -249,7 +249,14 @@ export class TrustWalletWallet implements Wallet {
       }),
     );
 
-    if (r.success === false) throw new ExecutionRejectedError(`swap rejected: ${String(r.error ?? r.message ?? "unknown")}`);
+    const txHash = String(r.txHash ?? r.transactionHash ?? r.hash ?? "");
+    if (r.success === false) {
+      if (/^0x[a-fA-F0-9]{64}$/.test(txHash)) throw new Error("swap response reported failure with a transaction hash");
+      throw new ExecutionRejectedError(`swap rejected: ${String(r.error ?? r.message ?? "unknown")}`);
+    }
+    if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
+      throw new Error("swap response did not include a valid transaction hash");
+    }
 
     // Output amount is in the TO token; USD notional = output * (reserve≈$1 on buy→USD via price on sell).
     const outAmount = leadingNum(r.output, NaN);
@@ -279,7 +286,7 @@ export class TrustWalletWallet implements Wallet {
       filledUsd: Math.round(filledUsd * 100) / 100,
       price,
       slippageBps,
-      txHash: String(r.txHash ?? r.transactionHash ?? r.hash ?? ""),
+      txHash,
       executedAt: typeof r.executedAt === "string" ? r.executedAt : now,
     };
   }

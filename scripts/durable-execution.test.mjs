@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -60,6 +60,21 @@ test("a filled journal recovers counters idempotently", async (t) => {
   assert.deepEqual(saved.recordedExecutionIds, [intent.executionId]);
 });
 
+test("recovery does not apply a fill already present in persisted state", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "circuit-idempotent-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const journalFile = join(dir, "execution.json");
+  let saves = 0;
+  const journal = new ExecutionJournal(journalFile, async () => {
+    saves += 1;
+  });
+  await writeJsonAtomic(journalFile, { schemaVersion: 1, status: "filled", createdAt: NOW, intent, fill });
+  const state = { ...initState(1, NOW), tradesToday: 1, recordedExecutionIds: [intent.executionId] };
+  const recovered = await journal.recover(state);
+  assert.equal(recovered.state.tradesToday, 1);
+  assert.equal(saves, 0);
+});
+
 test("an unknown transaction outcome engages the kill switch", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "circuit-ambiguous-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -95,4 +110,12 @@ test("runner lock excludes a second trader process", async (t) => {
   await release();
   const releaseAgain = await acquireRunnerLock(lock);
   await releaseAgain();
+});
+
+test("a newly-created ownerless lock is not treated as stale", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "circuit-lock-race-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const lock = join(dir, "runner.lock");
+  await mkdir(lock);
+  await assert.rejects(acquireRunnerLock(lock), /acquiring the lock/);
 });

@@ -36,7 +36,7 @@ export interface SignalIndicators {
   smaSlow: number;
   rsi: number;
   roc: number;
-  zscore: number;
+  zscore: number | null;
 }
 
 export interface Signal {
@@ -74,7 +74,7 @@ const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
  */
 export function decideSignal(inp: SignalInputs, cfg: StrategyConfig, asset: string): Signal {
   const { smaFast, smaSlow, rsi: rsiVal, roc: rocVal } = inp;
-  const z = inp.zscore ?? 0;
+  const z = inp.zscore ?? null;
   const turningUp = inp.turningUp ?? false;
   const indicators: SignalIndicators = { smaFast, smaSlow, rsi: rsiVal, roc: rocVal, zscore: z };
 
@@ -84,7 +84,7 @@ export function decideSignal(inp: SignalInputs, cfg: StrategyConfig, asset: stri
   const overbought = rsiVal >= cfg.rsiOverbought;
   const oversold = rsiVal <= cfg.rsiOversold;
 
-  const momentumBuy = trendUp && rocVal >= cfg.rocBuyThresholdPct && !overbought && z <= cfg.zscoreEntryMax;
+  const momentumBuy = trendUp && rocVal >= cfg.rocBuyThresholdPct && !overbought && (z == null || z <= cfg.zscoreEntryMax);
   const meanRevBuy = oversold && turningUp;
   const sell = trendDown || overbought;
 
@@ -105,6 +105,7 @@ export function decideSignal(inp: SignalInputs, cfg: StrategyConfig, asset: stri
       const g = clamp01(gap / 0.05);
       strength = Math.max(strength, clamp01(0.6 * r + 0.4 * g));
       reasons.push(`momentum: ROC ${rocVal.toFixed(2)}%, SMA${cfg.smaFastPeriod}>SMA${cfg.smaSlowPeriod}`);
+      if (z == null) reasons.push("z-score unavailable from live provider");
     }
     if (meanRevBuy) {
       const depth = clamp01((cfg.rsiOversold - rsiVal) / cfg.rsiOversold);

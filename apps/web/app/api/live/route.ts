@@ -36,7 +36,13 @@ export async function POST(request: NextRequest) {
   const contentLength = Number(request.headers.get("content-length") ?? 0);
   if (contentLength > 512_000) return NextResponse.json({ error: "snapshot too large" }, { status: 413 });
 
-  const value: unknown = normalizeLiveEnvelope(await request.json());
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
+  }
+  const value: unknown = normalizeLiveEnvelope(raw);
   if (!isLiveEnvelope(value)) return NextResponse.json({ error: "invalid live snapshot" }, { status: 400 });
   const incomingTime = Date.parse(value.updatedAt);
   if (incomingTime > Date.now() + 5 * 60_000) {
@@ -77,7 +83,12 @@ function isMissingBlobConfiguration(error: unknown): boolean {
 }
 
 async function readSnapshot(): Promise<unknown | null> {
-  const result = await get(SNAPSHOT_PATH, { access: "private" });
-  if (!result?.stream) return null;
-  return new Response(result.stream).json();
+  try {
+    const result = await get(SNAPSHOT_PATH, { access: "private" });
+    if (!result?.stream) return null;
+    return new Response(result.stream).json();
+  } catch (error) {
+    if (error instanceof BlobNotFoundError) return null;
+    throw error;
+  }
 }

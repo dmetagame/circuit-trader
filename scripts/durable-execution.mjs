@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { engageKillSwitch, recordExecution } from "circuit-trader-policy";
 
@@ -109,6 +109,12 @@ export async function acquireRunnerLock(lockDir) {
       const owner = await readJsonIfPresent(ownerFile);
       if (owner && Number.isInteger(owner.pid) && processAlive(owner.pid)) {
         throw new Error(`another Circuit Trader runner is active (pid ${owner.pid})`);
+      }
+      if (!owner) {
+        const lockStat = await stat(lockDir);
+        if (Date.now() - lockStat.mtimeMs < 60_000) {
+          throw new Error("another Circuit Trader runner is acquiring the lock");
+        }
       }
       await rm(lockDir, { recursive: true, force: true });
     }

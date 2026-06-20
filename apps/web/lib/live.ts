@@ -38,6 +38,9 @@ export function isLiveEnvelope(value: unknown): value is LiveEnvelope {
     isFiniteNumber(snapshot.constitution.maxDrawdownPct) &&
     isFiniteNumber(snapshot.constitution.minSignalConfidence) &&
     isFiniteNumber(snapshot.constitution.maxTokenRiskScore) &&
+    (snapshot.constitution.digest === undefined || (typeof snapshot.constitution.digest === "string" && /^0x[a-fA-F0-9]{64}$/.test(snapshot.constitution.digest))) &&
+    (snapshot.constitution.signer === undefined || snapshot.constitution.signer === null || (typeof snapshot.constitution.signer === "string" && /^0x[a-fA-F0-9]{40}$/.test(snapshot.constitution.signer))) &&
+    (snapshot.constitution.signature === undefined || snapshot.constitution.signature === null || (typeof snapshot.constitution.signature === "string" && /^0x[a-fA-F0-9]+$/.test(snapshot.constitution.signature))) &&
     isRecord(snapshot.portfolio) &&
     isFiniteNumber(snapshot.portfolio.equityUsd) &&
     isFiniteNumber(snapshot.portfolio.reserveUsd) &&

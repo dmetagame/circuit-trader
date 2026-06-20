@@ -3,7 +3,7 @@ import type { TradeProposal } from "./types.js";
 
 /**
  * Mutable runtime state the engine reads (but never mutates). The host persists this
- * across cron ticks. All monetary values are in USD.
+ * across worker ticks. All monetary values are in USD.
  */
 export interface RuntimeState {
   /** Current total equity = reserve + sum(positions). */
@@ -134,7 +134,7 @@ const RuntimeStateSchema = z.object({
   killSwitchReason: z.string().nullable(),
 });
 
-/** Validate persisted state and migrate records created before the tx-hash ledger existed. */
+/** Validate persisted state and migrate records created before execution IDs/performance fields existed. */
 export function parseRuntimeState(raw: unknown): RuntimeState {
   return RuntimeStateSchema.parse(raw);
 }

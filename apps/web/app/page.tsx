@@ -261,6 +261,7 @@ export default function Page() {
               <Kv k="Max token risk" v={String(snap.constitution.maxTokenRiskScore)} />
               {snap.constitution.digest ? <Kv k="Policy digest" v={`${snap.constitution.digest.slice(0, 10)}…${snap.constitution.digest.slice(-8)}`} /> : null}
               {snap.constitution.signer ? <Kv k="Signer" v={`${snap.constitution.signer.slice(0, 8)}…${snap.constitution.signer.slice(-6)}`} /> : null}
+              {snap.constitution.signature ? <Kv k="Signature" v={`${snap.constitution.signature.slice(0, 10)}…${snap.constitution.signature.slice(-8)}`} /> : null}
             </div>
 
             <div className="panel reveal">

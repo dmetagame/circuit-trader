@@ -109,6 +109,7 @@ export interface Snapshot {
     maxTokenRiskScore: number;
     digest?: string;
     signer?: string | null;
+    signature?: string | null;
   };
   portfolio: { equityUsd: number; reserveUsd: number; positions: Record<string, number> };
   killSwitch: { engaged: boolean; reason: string | null };
@@ -186,6 +187,7 @@ class Session {
         maxTokenRiskScore: this.constitution.riskGates.maxTokenRiskScore,
         digest: constitutionDigest(this.constitution),
         signer: this.constitution.signature?.signer ?? null,
+        signature: this.constitution.signature?.value ?? null,
       },
       portfolio: pf,
       killSwitch: { engaged: this.state.killSwitchEngaged, reason: this.state.killSwitchReason },

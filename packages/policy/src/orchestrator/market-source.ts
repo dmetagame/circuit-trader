@@ -130,7 +130,7 @@ export class CmcMcpSource implements MarketDataSource {
     const roc = numOr(quote[`percent_change_${this.rocWindow}`], 0);
     const turningUp = numOr(quote.percent_change_24h, 0) > 0;
 
-    const indicators: SignalInputs = { smaFast, smaSlow, rsi: rsiVal, roc, zscore: 0, turningUp };
+    const indicators: SignalInputs = { smaFast, smaSlow, rsi: rsiVal, roc, turningUp };
 
     const out: MarketSignals = { asset, closes: [], indicators };
     const price = numOr(quote.price, NaN);
