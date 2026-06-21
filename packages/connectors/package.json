@@ -17,6 +17,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "pretest": "npm --prefix ../.. run build:policy",
     "test": "vitest run"
   },
   "dependencies": {
