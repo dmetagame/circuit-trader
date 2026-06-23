@@ -3,15 +3,16 @@ import { evaluate } from "../policy-engine.js";
 import {
   engageKillSwitch as engageKill,
   markHighWater,
+  recordComplianceRoundTrip,
   recordExecution,
   rollDay,
   type RuntimeState,
 } from "../state.js";
 import { generateSignal, signalFromIndicators, type Signal, type StrategyConfig } from "../strategy/signals.js";
 import { deterministicSynthesizer, type Synthesizer, type Verdict } from "../strategy/synthesizer.js";
-import { buildProposalFromSignal, type SizingConfig } from "../strategy/strategy.js";
+import { buildComplianceProposal, buildProposalFromSignal, type SizingConfig } from "../strategy/strategy.js";
 import { ExecutionRejectedError, type Fill, type Portfolio, type SwapOrder, type Wallet } from "../execution/wallet.js";
-import type { PolicyDecision } from "../types.js";
+import type { PolicyDecision, TradeSide } from "../types.js";
 import type { MarketDataSource, MarketSignals } from "./market-source.js";
 
 /** Use precomputed indicators when the source provides them (live CMC), else compute from closes. */
@@ -25,6 +26,13 @@ export interface OrchestratorConfig {
   /** Assets to scan each tick (should be a subset of the constitution's allowlist). */
   assets: string[];
   disagreementConfidenceCap?: number;
+  /**
+   * Mandated daily compliance round trip. When enabled, if no round trip has completed in the
+   * current UTC day, the orchestrator runs one minimal net-flat round trip on `asset` so the
+   * agent stays in the rankings even on days the strategy stands down. `afterUtcHour` (default 0)
+   * delays it until a chosen UTC hour, giving the strategy first chance to trade naturally.
+   */
+  compliance?: { enabled: boolean; asset: string; afterUtcHour?: number };
 }
 
 export interface AssetTickResult {
@@ -192,64 +200,7 @@ export async function runTick(input: TickInput): Promise<TickResult> {
       }
 
       if (decision.allowed && decision.effectiveProposal) {
-        const ep = decision.effectiveProposal;
-        const order: SwapOrder = {
-          asset: ep.asset,
-          side: ep.side,
-          sizeUsd: ep.sizeUsd,
-          maxSlippageBps: c.perTrade.maxSlippageBps,
-          ...(ep.quoteId ? { quoteId: ep.quoteId } : {}),
-        };
-        const intent: ExecutionIntent = {
-          executionId: decision.decisionId,
-          decisionId: decision.decisionId,
-          evaluatedAt: decision.evaluatedAt,
-          order,
-          portfolioBefore: {
-            reserveUsd: state.reserveUsd,
-            positions: { ...state.positions },
-            equityUsd: state.equityUsd,
-          },
-        };
-        try {
-          if (input.executionObserver) {
-            try {
-              await input.executionObserver.beforeExecution(intent);
-            } catch (error) {
-              throw new ExecutionPersistenceError("could not persist execution intent", { cause: error });
-            }
-          }
-          const fill = await wallet.executeSwap(order, now);
-          r.fill = fill;
-          state = recordExecution(state, ep, fill.filledUsd, fill.executedAt, intent.executionId);
-          // Refresh balances so later assets in this tick see accurate reserve/exposure.
-          state = reconcile(state, await wallet.getPortfolio(), now);
-          if (input.executionObserver) {
-            try {
-              await input.executionObserver.afterExecution(intent, fill, state);
-            } catch (error) {
-              throw new ExecutionPersistenceError("could not checkpoint settled execution", { cause: error });
-            }
-          }
-          if (fill.slippageBps > c.perTrade.maxSlippageBps) {
-            r.audit.push(`SETTLED WARNING: realized slippage ${fill.slippageBps}bps exceeded requested cap ${c.perTrade.maxSlippageBps}bps`);
-          }
-          r.audit.push(`EXECUTED ${ep.side} ${fill.filledUsd} USD ${asset} @ ${fill.price} → ${fill.txHash}`);
-        } catch (e) {
-          if (e instanceof ExecutionPersistenceError) throw e;
-          if (input.executionObserver) {
-            if (!(e instanceof ExecutionRejectedError)) {
-              throw new ExecutionPersistenceError("wallet outcome is ambiguous; execution journal retained", { cause: e });
-            }
-            try {
-              await input.executionObserver.afterRejection(intent, e);
-            } catch (error) {
-              throw new ExecutionPersistenceError("could not clear rejected execution intent", { cause: error });
-            }
-          }
-          r.error = e instanceof Error ? e.message : String(e);
-          r.audit.push(`EXECUTION FAILED: ${r.error}`);
-        }
+        state = await executeAllowedDecision({ decision, constitution: c, wallet, observer: input.executionObserver, state, now, result: r });
       }
     } catch (e) {
       if (e instanceof ExecutionPersistenceError) throw e;
@@ -257,6 +208,28 @@ export async function runTick(input: TickInput): Promise<TickResult> {
       r.audit.push(`ERROR: ${r.error}`);
     }
     results.push(r);
+  }
+
+  // --- Mandated daily compliance round trip ---
+  // Run one minimal, net-flat round trip if enabled and none has completed this UTC day, so the
+  // agent stays ranked even when the strategy stood down. Each leg passes the full constitution.
+  const comp = config.compliance;
+  const today = now.slice(0, 10);
+  if (
+    comp?.enabled &&
+    !state.killSwitchEngaged &&
+    state.lastComplianceDayUtc !== today &&
+    new Date(now).getUTCHours() >= (comp.afterUtcHour ?? 0)
+  ) {
+    state = await complianceRoundTrip({
+      asset: comp.asset,
+      constitution: c,
+      wallet,
+      observer: input.executionObserver,
+      state,
+      now,
+      results,
+    });
   }
 
   const portfolioAfter = await wallet.getPortfolio();
@@ -275,4 +248,173 @@ export async function runTick(input: TickInput): Promise<TickResult> {
 
 function emptySignal(asset: string): Signal {
   return { asset, action: "hold", strength: 0, reason: "not evaluated", indicators: null };
+}
+
+/**
+ * Settle one ALLOWED decision through the wallet with write-ahead journaling. Shared by the
+ * per-asset loop and the compliance round trip so both get identical crash-safety semantics.
+ * Mutates `result` (fill/error/audit) and returns the new state. Rethrows ExecutionPersistenceError.
+ */
+async function executeAllowedDecision(args: {
+  decision: PolicyDecision;
+  constitution: Constitution;
+  wallet: Wallet;
+  observer?: ExecutionObserver;
+  state: RuntimeState;
+  now: string;
+  result: AssetTickResult;
+}): Promise<RuntimeState> {
+  const { decision, constitution: c, wallet, observer, now, result: r } = args;
+  let state = args.state;
+  const ep = decision.effectiveProposal!;
+  const order: SwapOrder = {
+    asset: ep.asset,
+    side: ep.side,
+    sizeUsd: ep.sizeUsd,
+    maxSlippageBps: c.perTrade.maxSlippageBps,
+    ...(ep.quoteId ? { quoteId: ep.quoteId } : {}),
+  };
+  const intent: ExecutionIntent = {
+    executionId: decision.decisionId,
+    decisionId: decision.decisionId,
+    evaluatedAt: decision.evaluatedAt,
+    order,
+    portfolioBefore: { reserveUsd: state.reserveUsd, positions: { ...state.positions }, equityUsd: state.equityUsd },
+  };
+  try {
+    if (observer) {
+      try {
+        await observer.beforeExecution(intent);
+      } catch (error) {
+        throw new ExecutionPersistenceError("could not persist execution intent", { cause: error });
+      }
+    }
+    const fill = await wallet.executeSwap(order, now);
+    r.fill = fill;
+    state = recordExecution(state, ep, fill.filledUsd, fill.executedAt, intent.executionId);
+    // Refresh balances so later orders this tick see accurate reserve/exposure.
+    state = reconcile(state, await wallet.getPortfolio(), now);
+    if (observer) {
+      try {
+        await observer.afterExecution(intent, fill, state);
+      } catch (error) {
+        throw new ExecutionPersistenceError("could not checkpoint settled execution", { cause: error });
+      }
+    }
+    if (fill.slippageBps > c.perTrade.maxSlippageBps) {
+      r.audit.push(`SETTLED WARNING: realized slippage ${fill.slippageBps}bps exceeded requested cap ${c.perTrade.maxSlippageBps}bps`);
+    }
+    r.audit.push(`EXECUTED ${ep.side} ${fill.filledUsd} USD ${ep.asset} @ ${fill.price} → ${fill.txHash}`);
+  } catch (e) {
+    if (e instanceof ExecutionPersistenceError) throw e;
+    if (observer) {
+      if (!(e instanceof ExecutionRejectedError)) {
+        throw new ExecutionPersistenceError("wallet outcome is ambiguous; execution journal retained", { cause: e });
+      }
+      try {
+        await observer.afterRejection(intent, e);
+      } catch (error) {
+        throw new ExecutionPersistenceError("could not clear rejected execution intent", { cause: error });
+      }
+    }
+    r.error = e instanceof Error ? e.message : String(e);
+    r.audit.push(`EXECUTION FAILED: ${r.error}`);
+  }
+  return state;
+}
+
+function complianceResult(asset: string, side: TradeSide | "hold" = "hold"): AssetTickResult {
+  return {
+    asset,
+    signal: { asset, action: side, strength: 0, reason: "compliance round-trip leg", indicators: null },
+    verdict: null,
+    decision: null,
+    fill: null,
+    error: null,
+    audit: [],
+  };
+}
+
+/**
+ * Execute one minimal net-flat compliance round trip on `asset`. Ordering is chosen for safety:
+ * if we already hold the asset we SELL then BUY (a failed second leg leaves us *more* in reserve,
+ * never over-exposed); otherwise BUY then SELL. Marks the day done only if BOTH legs fill.
+ */
+async function complianceRoundTrip(args: {
+  asset: string;
+  constitution: Constitution;
+  wallet: Wallet;
+  observer?: ExecutionObserver;
+  state: RuntimeState;
+  now: string;
+  results: AssetTickResult[];
+}): Promise<RuntimeState> {
+  const { asset, constitution: c, wallet, observer, now, results } = args;
+  let state = args.state;
+  const today = now.slice(0, 10);
+  const sizeUsd = c.perTrade.minTradeUsd;
+  const held = state.positions[asset] ?? 0;
+  const legs: TradeSide[] = held >= sizeUsd ? ["sell", "buy"] : ["buy", "sell"];
+
+  let tokenRiskScore: number;
+  try {
+    tokenRiskScore = await wallet.getTokenRiskScore(asset);
+  } catch (e) {
+    const r = complianceResult(asset);
+    r.error = e instanceof Error ? e.message : String(e);
+    r.audit.push(`COMPLIANCE ABORTED: token risk lookup failed: ${r.error}`);
+    results.push(r);
+    return state;
+  }
+
+  let bothFilled = true;
+  for (const side of legs) {
+    const r = complianceResult(asset, side);
+    let quote: { expectedSlippageBps: number; quoteId: string };
+    try {
+      quote = await wallet.getQuote({ asset, side, sizeUsd });
+    } catch (e) {
+      r.error = e instanceof Error ? e.message : String(e);
+      r.audit.push(`COMPLIANCE ${side} ABORTED: quote failed: ${r.error}`);
+      results.push(r);
+      bothFilled = false;
+      break;
+    }
+    const proposal = buildComplianceProposal({
+      asset,
+      side,
+      sizeUsd,
+      tokenRiskScore,
+      now,
+      quote: { expectedSlippageBps: quote.expectedSlippageBps, ...(quote.quoteId ? { quoteId: quote.quoteId } : {}) },
+    });
+    const decision = evaluate({ constitution: c, state, proposal, now });
+    r.decision = decision;
+    r.audit.push(...decision.audit);
+
+    if (decision.engageKillSwitch) {
+      state = engageKill(state, decision.killSwitchReason ?? "terminal gate");
+      results.push(r);
+      bothFilled = false;
+      break;
+    }
+    if (!(decision.allowed && decision.effectiveProposal)) {
+      r.audit.push(`COMPLIANCE ${side} DENIED — round trip incomplete this tick`);
+      results.push(r);
+      bothFilled = false;
+      break;
+    }
+
+    state = await executeAllowedDecision({ decision, constitution: c, wallet, observer, state, now, result: r });
+    results.push(r);
+    if (r.error) {
+      bothFilled = false;
+      break;
+    }
+  }
+
+  if (bothFilled) {
+    state = recordComplianceRoundTrip(state, today);
+  }
+  return state;
 }

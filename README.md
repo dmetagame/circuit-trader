@@ -105,6 +105,13 @@ Stop the runner before reconciliation. Never mark an ambiguous intent rejected u
 has been confirmed on-chain. State, journal, lock, and timeline paths live under `.circuit-trader/`
 by default. Balances are refreshed from Trust Wallet each tick.
 
+Track 1 requires at least one open+close round trip per UTC day to stay ranked. Set
+`COMPLIANCE_ENABLED=1` and the runner performs one minimal, net-flat round trip per day if the
+strategy hasn't already traded — `sell→buy` when the asset is held, else `buy→sell`. Both legs pass
+the full constitution; only the anti-churn timing gates and concentration caps are waived (a round
+trip nets flat — solvency and the drawdown/daily-loss/slippage/token-risk gates are never waived).
+Tune `COMPLIANCE_ASSET` and `COMPLIANCE_AFTER_UTC_HOUR` to give the strategy first chance to trade.
+
 When `LIVE_DASHBOARD_URL` and `LIVE_INGEST_SECRET` are set, each completed tick publishes a
 credential-free snapshot to the authenticated `/api/live` endpoint. The endpoint stores only
 the latest public snapshot in private Vercel Blob storage; browsers receive it through a

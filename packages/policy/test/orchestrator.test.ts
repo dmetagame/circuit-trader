@@ -177,6 +177,58 @@ describe("runTick", () => {
   });
 });
 
+describe("runTick — daily compliance round trip", () => {
+  const flatMarket = () => new FixtureMarketSource({ BNB: { asset: "BNB", closes: noisyUp(40) } });
+  // Force the strategy to stand down (strength can never reach 1.1) so compliance is the only activity.
+  const standDown = (o: Partial<OrchestratorConfig> = {}): OrchestratorConfig =>
+    config({ sizing: { baseTradeUsd: 8, minStrengthToTrade: 1.1 }, compliance: { enabled: true, asset: "BNB", afterUtcHour: 0 }, ...o });
+  const legsOf = (tick: Awaited<ReturnType<typeof runTick>>) =>
+    tick.results.filter((r) => r.signal.reason === "compliance round-trip leg");
+
+  it("opens and closes a minimal round trip when the strategy stands down (buy→sell from reserve)", async () => {
+    const wallet = new SimulatedWallet({ reserveUsd: 100, prices: { BNB: 600 }, riskScores: { BNB: 15 }, slippageBps: 20 });
+    const tick = await runTick({ constitution: constitution(), state: initState(100, NOW), wallet, market: flatMarket(), synthesizer: confirm, config: standDown(), now: NOW });
+    const legs = legsOf(tick);
+    expect(legs).toHaveLength(2);
+    expect(legs.map((l) => l.signal.action)).toEqual(["buy", "sell"]); // holds no BNB → buy then sell
+    expect(legs.every((l) => l.fill !== null)).toBe(true);
+    expect(tick.state.lastComplianceDayUtc).toBe("2026-06-16");
+    expect(tick.state.tradesToday).toBe(2);
+  });
+
+  it("uses the safer sell→buy ordering when the asset is already held", async () => {
+    const wallet = new SimulatedWallet({ reserveUsd: 50, prices: { BNB: 600 }, positionsUnits: { BNB: 0.1 }, riskScores: { BNB: 15 }, slippageBps: 20 });
+    const tick = await runTick({ constitution: constitution(), state: initState(50, NOW), wallet, market: flatMarket(), synthesizer: confirm, config: standDown(), now: NOW });
+    const legs = legsOf(tick);
+    expect(legs.map((l) => l.signal.action)).toEqual(["sell", "buy"]);
+    expect(legs.every((l) => l.fill !== null)).toBe(true);
+    expect(tick.state.lastComplianceDayUtc).toBe("2026-06-16");
+  });
+
+  it("does not repeat the round trip later the same UTC day", async () => {
+    const wallet = new SimulatedWallet({ reserveUsd: 100, prices: { BNB: 600 }, riskScores: { BNB: 15 }, slippageBps: 20 });
+    const first = await runTick({ constitution: constitution(), state: initState(100, NOW), wallet, market: flatMarket(), synthesizer: confirm, config: standDown(), now: NOW });
+    expect(legsOf(first)).toHaveLength(2);
+    const second = await runTick({ constitution: constitution(), state: first.state, wallet, market: flatMarket(), synthesizer: confirm, config: standDown(), now: NOW });
+    expect(legsOf(second)).toHaveLength(0);
+  });
+
+  it("does nothing when compliance is disabled (default)", async () => {
+    const wallet = new SimulatedWallet({ reserveUsd: 100, prices: { BNB: 600 }, riskScores: { BNB: 15 }, slippageBps: 20 });
+    const tick = await runTick({ constitution: constitution(), state: initState(100, NOW), wallet, market: flatMarket(), synthesizer: confirm, config: config({ sizing: { baseTradeUsd: 8, minStrengthToTrade: 1.1 } }), now: NOW });
+    expect(legsOf(tick)).toHaveLength(0);
+    expect(tick.state.lastComplianceDayUtc).toBeNull();
+  });
+
+  it("waits until afterUtcHour before running the round trip", async () => {
+    const wallet = new SimulatedWallet({ reserveUsd: 100, prices: { BNB: 600 }, riskScores: { BNB: 15 }, slippageBps: 20 });
+    // NOW is 12:00 UTC; gate at 13 → should not fire.
+    const tick = await runTick({ constitution: constitution(), state: initState(100, NOW), wallet, market: flatMarket(), synthesizer: confirm, config: standDown({ compliance: { enabled: true, asset: "BNB", afterUtcHour: 13 } }), now: NOW });
+    expect(legsOf(tick)).toHaveLength(0);
+    expect(tick.state.lastComplianceDayUtc).toBeNull();
+  });
+});
+
 describe("CmcMcpSource (adapter over a mock MCP transport — live tool surface)", () => {
   // Shapes mirror the real CoinMarketCap Agent Hub MCP (verified 2026-06-16).
   const transport: McpTransport = {

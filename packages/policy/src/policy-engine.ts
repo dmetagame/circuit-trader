@@ -154,39 +154,46 @@ export function evaluate({ constitution: c, state: rawState, proposal, now }: Ev
   }
 
   // --- 3. Activity & cost controls ---
-  const lastForAsset = state.lastTradeAtPerAsset[proposal.asset];
-  if (lastForAsset) {
-    const mins = (Date.parse(now) - Date.parse(lastForAsset)) / 60_000;
-    if (mins < c.activity.cooldownMinutesPerAsset) {
+  // These exist to prevent over-trading. A mandated daily compliance round trip is the
+  // opposite of churn (one minimal, net-flat round trip required to stay ranked), so it is
+  // exempt from the TIMING gates only — every risk/solvency gate above and below still applies.
+  if (proposal.compliance) {
+    pass("compliance round-trip leg — exempt from cooldown / min-interval / max-trades gates");
+  } else {
+    const lastForAsset = state.lastTradeAtPerAsset[proposal.asset];
+    if (lastForAsset) {
+      const mins = (Date.parse(now) - Date.parse(lastForAsset)) / 60_000;
+      if (mins < c.activity.cooldownMinutesPerAsset) {
+        block({
+          code: "COOLDOWN_ACTIVE",
+          severity: "block",
+          message: `still cooling down on ${proposal.asset}`,
+          observed: round2(mins),
+          limit: c.activity.cooldownMinutesPerAsset,
+        });
+      }
+    }
+    if (state.lastTradeAtGlobal) {
+      const secs = (Date.parse(now) - Date.parse(state.lastTradeAtGlobal)) / 1_000;
+      if (secs < c.activity.minTradeIntervalSeconds) {
+        block({
+          code: "MIN_INTERVAL",
+          severity: "block",
+          message: "global minimum trade interval not elapsed",
+          observed: round2(secs),
+          limit: c.activity.minTradeIntervalSeconds,
+        });
+      }
+    }
+    if (state.tradesToday >= c.activity.maxTradesPerDay) {
       block({
-        code: "COOLDOWN_ACTIVE",
+        code: "MAX_TRADES_REACHED",
         severity: "block",
-        message: `still cooling down on ${proposal.asset}`,
-        observed: round2(mins),
-        limit: c.activity.cooldownMinutesPerAsset,
+        message: "daily trade cap reached",
+        observed: state.tradesToday,
+        limit: c.activity.maxTradesPerDay,
       });
     }
-  }
-  if (state.lastTradeAtGlobal) {
-    const secs = (Date.parse(now) - Date.parse(state.lastTradeAtGlobal)) / 1_000;
-    if (secs < c.activity.minTradeIntervalSeconds) {
-      block({
-        code: "MIN_INTERVAL",
-        severity: "block",
-        message: "global minimum trade interval not elapsed",
-        observed: round2(secs),
-        limit: c.activity.minTradeIntervalSeconds,
-      });
-    }
-  }
-  if (state.tradesToday >= c.activity.maxTradesPerDay) {
-    block({
-      code: "MAX_TRADES_REACHED",
-      severity: "block",
-      message: "daily trade cap reached",
-      observed: state.tradesToday,
-      limit: c.activity.maxTradesPerDay,
-    });
   }
 
   // --- 4. Execution quality ---
@@ -215,14 +222,18 @@ export function evaluate({ constitution: c, state: rawState, proposal, now }: Ev
   caps.push({ code: "ABOVE_MAX_TRADE", cap: c.perTrade.maxTradeUsd });
   if (proposal.side === "buy") {
     caps.push({ code: "INSUFFICIENT_RESERVE", cap: state.reserveUsd });
-    caps.push({
-      code: "CONCENTRATION_EXCEEDED",
-      cap: (c.portfolio.maxConcentrationPctPerAsset / 100) * equity - currentPos,
-    });
-    caps.push({
-      code: "EXPOSURE_EXCEEDED",
-      cap: (c.portfolio.maxPortfolioExposurePct / 100) * equity - totalNonReserveExposureUsd(state),
-    });
+    // Concentration/exposure bound sustained risk; a compliance round trip reverts within the
+    // same tick (net-flat), so its buy leg is exempt. Solvency (reserve) is never exempt.
+    if (!proposal.compliance) {
+      caps.push({
+        code: "CONCENTRATION_EXCEEDED",
+        cap: (c.portfolio.maxConcentrationPctPerAsset / 100) * equity - currentPos,
+      });
+      caps.push({
+        code: "EXPOSURE_EXCEEDED",
+        cap: (c.portfolio.maxPortfolioExposurePct / 100) * equity - totalNonReserveExposureUsd(state),
+      });
+    }
   } else {
     caps.push({ code: "INSUFFICIENT_POSITION", cap: currentPos });
     if (proposal.asset === c.nativeAsset && c.portfolio.minNativeGasReserveUsd != null) {
@@ -233,13 +244,17 @@ export function evaluate({ constitution: c, state: rawState, proposal, now }: Ev
   const binding = caps.reduce((min, cur) => (cur.cap < min.cap ? cur : min));
   const bindingCap = Math.max(0, binding.cap);
 
-  if (proposal.sizeUsd < c.perTrade.minTradeUsd) {
+  // A compliance leg is mandated-minimal, so the anti-dust floor doesn't apply (it can close
+  // exactly what it opened even after slippage); it still needs a non-zero, executable size.
+  const sizeFloor = proposal.compliance ? 0.01 : c.perTrade.minTradeUsd;
+
+  if (proposal.sizeUsd < sizeFloor) {
     block({
       code: "BELOW_MIN_TRADE",
       severity: "block",
       message: "trade smaller than minimum (dust)",
       observed: proposal.sizeUsd,
-      limit: c.perTrade.minTradeUsd,
+      limit: sizeFloor,
     });
     return deny({ proposal, now, violations, adjustments, audit, engageKill, killReason });
   }
@@ -257,14 +272,14 @@ export function evaluate({ constitution: c, state: rawState, proposal, now }: Ev
       });
       return deny({ proposal, now, violations, adjustments, audit, engageKill, killReason });
     }
-    if (bindingCap < c.perTrade.minTradeUsd) {
+    if (bindingCap < sizeFloor) {
       // Can't shrink enough to be worth doing.
       block({
         code: "UNCLAMPABLE",
         severity: "block",
-        message: `binding limit (${binding.code}) leaves room below minTradeUsd`,
+        message: `binding limit (${binding.code}) leaves room below ${proposal.compliance ? "executable size" : "minTradeUsd"}`,
         observed: round2(bindingCap),
-        limit: c.perTrade.minTradeUsd,
+        limit: sizeFloor,
       });
       return deny({ proposal, now, violations, adjustments, audit, engageKill, killReason });
     }

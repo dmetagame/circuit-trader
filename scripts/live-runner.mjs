@@ -28,6 +28,9 @@ const assets = csv(process.env.AGENT_ASSETS ?? "BNB,TWT").filter((a) => a !== re
 const tokenAddresses = parseJsonMap(process.env.AGENT_TOKEN_ADDRESSES);
 const baseTradeUsd = finiteNumberEnv("AGENT_BASE_TRADE_USD", 4, { minExclusive: 0 });
 const minStrengthToTrade = finiteNumberEnv("AGENT_MIN_STRENGTH", 0.3, { min: 0, max: 1 });
+const complianceEnabled = boolEnv("COMPLIANCE_ENABLED", false);
+const complianceAsset = (process.env.COMPLIANCE_ASSET ?? assets[0] ?? "BNB").toUpperCase();
+const complianceAfterUtcHour = finiteNumberEnv("COMPLIANCE_AFTER_UTC_HOUR", 0, { min: 0, max: 23 });
 const requireSigned = boolEnv("REQUIRE_SIGNED_CONSTITUTION", true);
 const requireSignerIsWallet = boolEnv("REQUIRE_CONSTITUTION_SIGNER_IS_WALLET", true);
 const synthesizer = selectSynthesizer();
@@ -156,6 +159,9 @@ async function runOnce() {
           minStrengthToTrade,
         },
         assets,
+        ...(complianceEnabled
+          ? { compliance: { enabled: true, asset: complianceAsset, afterUtcHour: complianceAfterUtcHour } }
+          : {}),
       },
       now,
     });
@@ -215,6 +221,12 @@ async function loadConstitution() {
   }
   const disallowed = assets.filter((asset) => !constitution.allowedAssets.includes(asset));
   if (disallowed.length) throw new Error(`AGENT_ASSETS contains assets outside the constitution: ${disallowed.join(",")}`);
+  if (complianceEnabled) {
+    if (complianceAsset === reserveAsset) throw new Error("COMPLIANCE_ASSET cannot be the reserve asset");
+    if (!constitution.allowedAssets.includes(complianceAsset)) {
+      throw new Error(`COMPLIANCE_ASSET ${complianceAsset} is not in the constitution allowlist`);
+    }
+  }
   if (requireSigned) {
     const verification = await verifyConstitution(constitution, { requireSignerIsWallet });
     if (!verification.valid) throw new Error(`constitution signature invalid: ${verification.reason ?? "unknown"}`);

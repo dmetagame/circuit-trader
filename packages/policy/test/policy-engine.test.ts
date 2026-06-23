@@ -194,6 +194,46 @@ describe("policy engine — terminal drawdown gate", () => {
   });
 });
 
+describe("policy engine — compliance round-trip legs", () => {
+  it("bypasses the anti-churn timing gates (cooldown / min-interval / max-trades)", () => {
+    // A state that would normally fail all three timing gates at once.
+    const state = baseState({
+      lastTradeAtPerAsset: { BNB: NOW },
+      lastTradeAtGlobal: NOW,
+      tradesToday: 99,
+    });
+    const d = evaluate({ constitution: constitution(), state, proposal: proposal({ compliance: true, sizeUsd: 2 }), now: NOW });
+    expect(d.allowed).toBe(true);
+    const codes = d.violations.map((v) => v.code);
+    expect(codes).not.toContain("COOLDOWN_ACTIVE");
+    expect(codes).not.toContain("MIN_INTERVAL");
+    expect(codes).not.toContain("MAX_TRADES_REACHED");
+  });
+
+  it("is still subject to the terminal drawdown gate", () => {
+    const state = baseState({ equityUsd: 70, highWaterMarkUsd: 100, reserveUsd: 70 });
+    const d = evaluate({ constitution: constitution(), state, proposal: proposal({ compliance: true }), now: NOW });
+    expect(d.allowed).toBe(false);
+    expect(d.engageKillSwitch).toBe(true);
+    expect(d.violations.map((v) => v.code)).toContain("DRAWDOWN_BREACH");
+  });
+
+  it("is exempt from concentration caps a normal buy would fail (round trip nets flat)", () => {
+    // BNB already at 50% concentration vs a 40% cap.
+    const state = baseState({ equityUsd: 100, reserveUsd: 50, positions: { BNB: 50 } });
+    const normal = evaluate({ constitution: constitution(), state, proposal: proposal({ side: "buy", sizeUsd: 2 }), now: NOW });
+    expect(normal.allowed).toBe(false);
+    const comp = evaluate({ constitution: constitution(), state, proposal: proposal({ side: "buy", sizeUsd: 2, compliance: true }), now: NOW });
+    expect(comp.allowed).toBe(true);
+  });
+
+  it("still cannot sell a position it does not hold", () => {
+    const state = baseState({ equityUsd: 100, reserveUsd: 100, positions: {} });
+    const d = evaluate({ constitution: constitution(), state, proposal: proposal({ side: "sell", sizeUsd: 2, compliance: true }), now: NOW });
+    expect(d.allowed).toBe(false);
+  });
+});
+
 describe("determinism", () => {
   it("produces identical decisions for identical inputs", () => {
     const args = { constitution: constitution(), state: baseState(), proposal: proposal(), now: NOW };

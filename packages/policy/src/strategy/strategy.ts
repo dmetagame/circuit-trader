@@ -1,4 +1,4 @@
-import type { TradeProposal } from "../types.js";
+import type { TradeProposal, TradeSide } from "../types.js";
 import { generateSignal, type Signal, type StrategyConfig } from "./signals.js";
 import { deterministicSynthesizer, type Synthesizer, type Verdict } from "./synthesizer.js";
 
@@ -121,6 +121,36 @@ export async function buildProposalFromSignal({
     : `LLM vetoed: recommended ${verdict.recommendedAction} vs signal ${signal.action} → confidence capped at ${confidence}`;
 
   return { signal, verdict, proposal, note };
+}
+
+export interface ComplianceLegArgs {
+  asset: string;
+  side: TradeSide;
+  sizeUsd: number;
+  tokenRiskScore: number;
+  now: string;
+  quote?: Quote;
+}
+
+/**
+ * Build one leg of the mandated daily compliance round trip. It carries full confidence (it is a
+ * required action, not a speculative one) and the `compliance` flag so the policy engine waives the
+ * anti-churn timing gates while still enforcing every risk/solvency gate. The strategy/LLM is not
+ * involved — this exists only to keep the agent in the rankings on days the strategy stands down.
+ */
+export function buildComplianceProposal({ asset, side, sizeUsd, tokenRiskScore, now, quote }: ComplianceLegArgs): TradeProposal {
+  return {
+    asset,
+    side,
+    sizeUsd: round(sizeUsd, 2),
+    expectedSlippageBps: quote?.expectedSlippageBps ?? 0,
+    signalConfidence: 1,
+    tokenRiskScore,
+    rationale: `Mandated daily compliance round-trip ${side} (${asset}) — keeps the agent ranked; net-flat.`,
+    proposedAt: now,
+    compliance: true,
+    ...(quote?.quoteId ? { quoteId: quote.quoteId } : {}),
+  };
 }
 
 export interface ProposeArgs {

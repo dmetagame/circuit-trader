@@ -13,6 +13,11 @@ export const TradeProposalSchema = z.object({
   rationale: z.string(),
   proposedAt: z.string().datetime(),
   quoteId: z.string().min(1).optional(),
+  // A mandated daily round-trip leg. Exempt from anti-churn TIMING gates (cooldown / min
+  // interval / max-trades-per-day) and from concentration/exposure caps (a round trip nets
+  // the portfolio ~flat). NEVER exempt from solvency or hard risk gates: kill switch, expiry,
+  // drawdown, daily loss, slippage, token risk, allowlist, and reserve/position sufficiency.
+  compliance: z.boolean().optional(),
 });
 
 export interface TradeProposal extends z.infer<typeof TradeProposalSchema> {
@@ -33,6 +38,8 @@ export interface TradeProposal extends z.infer<typeof TradeProposalSchema> {
   proposedAt: string;
   /** Optional opaque quote id from Trust Wallet Agent Kit. */
   quoteId?: string;
+  /** True for a mandated daily compliance round-trip leg (see schema note). */
+  compliance?: boolean;
 }
 
 export type ViolationCode =

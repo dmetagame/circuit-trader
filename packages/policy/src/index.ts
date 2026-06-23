@@ -17,6 +17,7 @@ export {
   rollDay,
   markHighWater,
   recordExecution,
+  recordComplianceRoundTrip,
   engageKillSwitch,
   parseRuntimeState,
   totalNonReserveExposureUsd,
@@ -60,6 +61,8 @@ export { claudeSynthesizer, type ClaudeSynthesizerOptions } from "./strategy/cla
 export {
   proposeTrade,
   buildProposalFromSignal,
+  buildComplianceProposal,
+  type ComplianceLegArgs,
   type AssetMarketData,
   type SizingConfig,
   type Quote,

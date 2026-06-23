@@ -28,6 +28,8 @@ export interface RuntimeState {
   tradesToday: number;
   /** Bounded execution-id ledger used to make crash recovery idempotent. */
   recordedExecutionIds: string[];
+  /** UTC date (YYYY-MM-DD) the last completed compliance round trip belongs to. */
+  lastComplianceDayUtc: string | null;
   killSwitchEngaged: boolean;
   killSwitchReason: string | null;
 }
@@ -46,6 +48,7 @@ export function initState(reserveUsd: number, nowIso: string): RuntimeState {
     lastTradeAtGlobal: null,
     tradesToday: 0,
     recordedExecutionIds: [],
+    lastComplianceDayUtc: null,
     killSwitchEngaged: false,
     killSwitchReason: null,
   };
@@ -118,6 +121,11 @@ export function engageKillSwitch(state: RuntimeState, reason: string): RuntimeSt
   return { ...state, killSwitchEngaged: true, killSwitchReason: reason };
 }
 
+/** Mark the mandated compliance round trip as completed for `dayUtc` (YYYY-MM-DD). Pure. */
+export function recordComplianceRoundTrip(state: RuntimeState, dayUtc: string): RuntimeState {
+  return { ...state, lastComplianceDayUtc: dayUtc };
+}
+
 const RuntimeStateSchema = z.object({
   equityUsd: z.number().finite().nonnegative(),
   highWaterMarkUsd: z.number().finite().nonnegative(),
@@ -130,6 +138,7 @@ const RuntimeStateSchema = z.object({
   lastTradeAtGlobal: z.string().datetime().nullable(),
   tradesToday: z.number().int().nonnegative(),
   recordedExecutionIds: z.array(z.string().min(1)).max(500).default([]),
+  lastComplianceDayUtc: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
   killSwitchEngaged: z.boolean(),
   killSwitchReason: z.string().nullable(),
 });
