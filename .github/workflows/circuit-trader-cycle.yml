@@ -38,13 +38,15 @@ jobs:
         run: npm run build:connectors
 
       - name: Install Trust Wallet Agent Kit CLI
-        # The connector spawns `twak serve`. Verify the package name/version against the Bitget/TWAK
-        # docs if this fails; pin a version once confirmed.
+        # Only needed to trade. The connector spawns `twak serve`. Verify the package name/version
+        # against the Bitget/TWAK docs if this fails; pin a version once confirmed.
+        if: ${{ vars.LIVE_TRADING == '1' || github.event.inputs.trade == '1' }}
         run: npm install -g @trustwallet/cli
 
       - name: Restore TWAK keystore
-        # TWAK_DIR_TAR_B64 = base64 of a gzipped tar of your ~/.twak directory, created PRIVATELY:
+        # Only needed to trade. TWAK_DIR_TAR_B64 = base64 of a gzipped tar of ~/.twak, created PRIVATELY:
         #   tar -czf - -C "$HOME" .twak | base64 -w0      (then paste into the secret)
+        if: ${{ vars.LIVE_TRADING == '1' || github.event.inputs.trade == '1' }}
         run: |
           if [ -z "$TWAK_DIR_TAR_B64" ]; then echo "TWAK_DIR_TAR_B64 secret is required" >&2; exit 1; fi
           echo "$TWAK_DIR_TAR_B64" | base64 -d | tar -xzf - -C "$HOME"
