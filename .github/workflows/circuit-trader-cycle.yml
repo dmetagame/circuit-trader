@@ -24,7 +24,7 @@ concurrency:
 jobs:
   cycle:
     runs-on: ubuntu-latest
-    timeout-minutes: 15 # one-shot cycle; the hard timeout bounds any hung MCP/network call
+    timeout-minutes: 20 # one-shot cycle (~3m, bounded by inner timeout) + ~13m self-chain pacing sleep
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -98,3 +98,19 @@ jobs:
         run: node scripts/state-sync.mjs push
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+
+      # Self-chaining: GitHub's `schedule` is unreliable, but `workflow_dispatch` is not. After each
+      # armed cycle, wait ~13 min then dispatch the next run via a PAT (the default GITHUB_TOKEN is
+      # intentionally barred from triggering workflows). Runs even if the cycle errored, so a transient
+      # failure doesn't break the chain. The */15 schedule remains only as a re-seed if the chain dies.
+      - name: Re-dispatch next cycle (self-chaining)
+        if: ${{ always() && (vars.LIVE_TRADING == '1' || github.event.inputs.trade == '1') }}
+        run: |
+          if [ -z "$DISPATCH_PAT" ]; then echo "DISPATCH_PAT not set — chain not continued (schedule will re-seed)"; exit 0; fi
+          sleep 780   # pace to ~16-min cycles: fresh dashboard (<30m) while staying within CMC credit budget
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $DISPATCH_PAT" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/circuit-trader-cycle.yml/dispatches" \
+            -d '{"ref":"main","inputs":{"trade":"1"}}')
+          echo "re-dispatch HTTP $code"
+          [ "$code" = "204" ] || echo "WARNING: re-dispatch failed (HTTP $code) — schedule will re-seed"
