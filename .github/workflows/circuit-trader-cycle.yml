@@ -24,7 +24,7 @@ concurrency:
 jobs:
   cycle:
     runs-on: ubuntu-latest
-    timeout-minutes: 50 # each run holds a ~45-min internal tick loop, so a single fire keeps the dashboard fresh
+    timeout-minutes: 15 # one-shot cycle; the hard timeout bounds any hung MCP/network call
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,18 +59,13 @@ jobs:
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
 
-      - name: Run trading loop (armed)
+      - name: Run one cycle (armed)
         if: ${{ vars.LIVE_TRADING == '1' || github.event.inputs.trade == '1' }}
-        # Internal tick loop for ~45 min so one fired run keeps the dashboard fresh (snapshot every
-        # ~15 min), instead of a single one-shot update. timeout SIGTERMs the runner before the job's
-        # hard timeout so the "Push state" step still runs. 124/143 are our expected stop codes.
-        run: |
-          timeout 2700 node scripts/live-runner.mjs; ec=$?
-          echo "runner exit: $ec"
-          if [ $ec -ne 0 ] && [ $ec -ne 124 ] && [ $ec -ne 143 ]; then exit $ec; fi
+        # One-shot, bounded by a hard step timeout so a hung MCP/network call can't block the
+        # concurrency slot for the whole job window. Frequency comes from the */15 schedule.
+        run: timeout 600 node scripts/live-runner.mjs --once
         env:
           ENV_FILE: /dev/null # use the real environment below, not a file
-          RUNNER_INTERVAL_MS: "900000" # 15 min — under the 30-min stale threshold, conserves CMC credits
           # --- sponsor + agent credentials (secrets) ---
           CMC_MCP_API_KEY: ${{ secrets.CMC_MCP_API_KEY }}
           TWAK_ACCESS_ID: ${{ secrets.TWAK_ACCESS_ID }}
