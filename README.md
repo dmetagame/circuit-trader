@@ -130,6 +130,25 @@ Do not use WSL, a laptop, or a host that sleeps for the competition worker. A sy
 run while that host is suspended or terminated. Confirm the organizer's exact UTC start/end times
 before installing the example timers; the public rules currently publish dates, not precise times.
 
+### Run on GitHub Actions (no VM)
+
+`.github/workflows/circuit-trader-cycle.yml` runs one `live:once` cycle hourly on an ephemeral
+runner. Durable state (counters, execution journal, timeline) is synced to a private Vercel Blob
+prefix via `scripts/state-sync.mjs` — pulled before the cycle, pushed after — so crash-recovery and
+idempotency survive across runs without a persistent host. Real swaps run only when the repo
+variable `LIVE_TRADING=1` (or a manual dispatch with `trade=1`); otherwise the job just syncs state.
+
+Required repository **secrets**: `BLOB_READ_WRITE_TOKEN`, `LIVE_INGEST_SECRET`, `CMC_MCP_API_KEY`,
+`TWAK_ACCESS_ID`, `TWAK_HMAC_SECRET`, `TWAK_WALLET_PASSWORD`, `AGENT_WALLET_ADDRESS`,
+`CONSTITUTION_JSON` (the signed constitution), and `TWAK_DIR_TAR_B64`. Create the last one PRIVATELY:
+
+```bash
+tar -czf - -C "$HOME" .twak | base64 -w0   # paste output into the TWAK_DIR_TAR_B64 secret
+```
+
+Tradeoff: the wallet keystore lives as a CI secret. Test with a manual `workflow_dispatch`
+(`trade=1`) and confirm a round trip on the dashboard before setting `LIVE_TRADING=1` for the window.
+
 5. Before the Track 1 trading window opens on June 22, 2026, register the same agent wallet:
 
 ```bash

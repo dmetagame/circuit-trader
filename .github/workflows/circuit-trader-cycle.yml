@@ -1,0 +1,96 @@
+name: Circuit Trader Cycle
+
+# Hourly autonomous cycle on an ephemeral GitHub-hosted runner.
+# Durable state (counters, execution journal, timeline) lives in Vercel Blob and is pulled
+# before the cycle and pushed after, so the agent survives across runs without a VM.
+#
+# SAFETY: real swaps only run when the repo variable LIVE_TRADING == "1" (or a manual dispatch
+# with trade=1). Until then the job installs, pulls, and pushes state but does NOT trade.
+
+on:
+  schedule:
+    - cron: "7 * * * *" # hourly at :07 (top-of-hour is the most congested/delayed slot)
+  workflow_dispatch:
+    inputs:
+      trade:
+        description: "Set to 1 to arm real swaps for this manual run"
+        default: "0"
+
+# Never let two cycles overlap (the runner also takes its own lock, but this is the cheap guard).
+concurrency:
+  group: circuit-trader-cycle
+  cancel-in-progress: false
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build policy + connectors
+        run: npm run build:connectors
+
+      - name: Install Trust Wallet Agent Kit CLI
+        # The connector spawns `twak serve`. Verify the package name/version against the Bitget/TWAK
+        # docs if this fails; pin a version once confirmed.
+        run: npm install -g @trustwallet/cli
+
+      - name: Restore TWAK keystore
+        # TWAK_DIR_TAR_B64 = base64 of a gzipped tar of your ~/.twak directory, created PRIVATELY:
+        #   tar -czf - -C "$HOME" .twak | base64 -w0      (then paste into the secret)
+        run: |
+          if [ -z "$TWAK_DIR_TAR_B64" ]; then echo "TWAK_DIR_TAR_B64 secret is required" >&2; exit 1; fi
+          echo "$TWAK_DIR_TAR_B64" | base64 -d | tar -xzf - -C "$HOME"
+          chmod -R go-rwx "$HOME/.twak"
+        env:
+          TWAK_DIR_TAR_B64: ${{ secrets.TWAK_DIR_TAR_B64 }}
+
+      - name: Pull durable state from Blob
+        run: node scripts/state-sync.mjs pull
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+
+      - name: Run one cycle (armed)
+        if: ${{ vars.LIVE_TRADING == '1' || github.event.inputs.trade == '1' }}
+        run: node scripts/live-runner.mjs --once
+        env:
+          ENV_FILE: /dev/null # use the real environment below, not a file
+          # --- sponsor + agent credentials (secrets) ---
+          CMC_MCP_API_KEY: ${{ secrets.CMC_MCP_API_KEY }}
+          TWAK_ACCESS_ID: ${{ secrets.TWAK_ACCESS_ID }}
+          TWAK_HMAC_SECRET: ${{ secrets.TWAK_HMAC_SECRET }}
+          TWAK_WALLET_PASSWORD: ${{ secrets.TWAK_WALLET_PASSWORD }}
+          AGENT_WALLET_ADDRESS: ${{ secrets.AGENT_WALLET_ADDRESS }}
+          CONSTITUTION_JSON: ${{ secrets.CONSTITUTION_JSON }}
+          LIVE_INGEST_SECRET: ${{ secrets.LIVE_INGEST_SECRET }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          # --- non-secret config (edit here or override via repo Variables) ---
+          LIVE_DASHBOARD_URL: https://circuit-trader.vercel.app
+          AGENT_ASSETS: ${{ vars.AGENT_ASSETS || 'BNB,TWT' }}
+          AGENT_RESERVE_ASSET: ${{ vars.AGENT_RESERVE_ASSET || 'USDT' }}
+          AGENT_BASE_TRADE_USD: ${{ vars.AGENT_BASE_TRADE_USD || '0.2' }}
+          AGENT_MIN_STRENGTH: ${{ vars.AGENT_MIN_STRENGTH || '0.3' }}
+          SYNTHESIZER_MODE: ${{ vars.SYNTHESIZER_MODE || 'deterministic' }}
+          REQUIRE_SIGNED_CONSTITUTION: "true"
+          REQUIRE_CONSTITUTION_SIGNER_IS_WALLET: "true"
+          # --- daily compliance round trip (keeps the agent ranked) ---
+          COMPLIANCE_ENABLED: ${{ vars.COMPLIANCE_ENABLED || '1' }}
+          COMPLIANCE_ASSET: ${{ vars.COMPLIANCE_ASSET || 'BNB' }}
+          COMPLIANCE_AFTER_UTC_HOUR: ${{ vars.COMPLIANCE_AFTER_UTC_HOUR || '12' }}
+
+      - name: Skipped (not armed)
+        if: ${{ vars.LIVE_TRADING != '1' && github.event.inputs.trade != '1' }}
+        run: echo "LIVE_TRADING is not '1' — cycle ran in no-trade mode (state pulled/pushed only)."
+
+      - name: Push durable state to Blob
+        if: always() # checkpoint state even if the cycle errored
+        run: node scripts/state-sync.mjs push
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
