@@ -114,3 +114,5 @@ jobs:
             -d '{"ref":"main","inputs":{"trade":"1"}}')
           echo "re-dispatch HTTP $code"
           [ "$code" = "204" ] || echo "WARNING: re-dispatch failed (HTTP $code) — schedule will re-seed"
+        env:
+          DISPATCH_PAT: ${{ secrets.DISPATCH_PAT }}
